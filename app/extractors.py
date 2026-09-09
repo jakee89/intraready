@@ -122,6 +122,16 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
             "confidence": "local-ai", "notes": "Verify against the source PDF.",
         })
     if lines:
+        goods_positions = [index + 1 for index, line in enumerate(lines) if line["line_kind"] == "goods"]
+        if len(goods_positions) == 1:
+            for line in lines:
+                if line["line_kind"] != "charge":
+                    continue
+                line["linked_position"] = goods_positions[0]
+                if re.search(r"(?i)freight|transport|shipping|carriage|delivery cost", line["description"]):
+                    line["line_kind"] = "charge_stat"
+                elif re.search(r"(?i)print|engraving|logo|personalisation|decoration", line["description"]):
+                    line["line_kind"] = "charge_invoice"
         draft["lines"] = lines
         draft["adapter"] = "local-ai"
         draft["notes"] += " Local AI created review suggestions; none are approved automatically."
@@ -152,7 +162,7 @@ def _apply_supplier_defaults(draft: dict, profile: dict) -> None:
     draft["notes"] += " Saved supplier defaults were applied."
 
 
-def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]]) -> dict:
+def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]], text: str) -> dict:
     """Fast path for common Code/Description/Quantity/Price/Amount invoice tables."""
     for table in tables:
         if len(table) < 2:
@@ -205,6 +215,16 @@ def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]]) -> d
                 if kind == "charge_invoice":
                     parsed[-1]["linked_position"] = 1
         if parsed:
+            freight = _money(_first(r"(?i)freight costs?\s*:\s*([\d.,]+)", text))
+            if freight:
+                parsed.append({
+                    "sku": "", "description": "Freight", "quantity": "1", "unit": "",
+                    "raw_commodity_code": "", "hs_code": "", "origin_country": "",
+                    "invoice_value": freight, "statistical_value": "", "unit_net_mass": "", "net_mass": "",
+                    "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "", "line_kind": "charge_stat",
+                    "linked_position": 1, "reviewed": False, "source_page": 1, "confidence": "saved-layout",
+                    "notes": "Freight shown on invoice; confirm it covers transport to the Malta border.",
+                })
             draft["lines"] = parsed
             draft["adapter"] = "fast-table"
             draft["notes"] += " A reusable table layout was recognised; local AI was skipped."
@@ -371,7 +391,7 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
         draft = _parse_midocean(draft, page_lines, combined)
     else:
-        draft = _parse_common_tables(draft, tables)
+        draft = _parse_common_tables(draft, tables, combined)
         if not draft["lines"]:
             marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
             ai_result, ai_message = extract_structured_invoice(marked_text)
