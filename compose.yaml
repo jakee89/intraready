@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: intraready:0.5.0
+    image: intraready:0.5.1
     container_name: intraready
     restart: unless-stopped
     environment:

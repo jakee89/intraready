@@ -353,15 +353,26 @@ function openCatalogueDialog() {
   $("#catalogueDialog").showModal();
 }
 
+function mappingLabels() {
+  return Object.fromEntries([...$("#mappingField").options].map(option => [option.value, option.textContent]));
+}
+
+function renderMappingBoxes() {
+  const mapping = state.mapping;
+  const labels = mappingLabels();
+  const visible = mapping.regions.filter(region => region.page === mapping.page);
+  $("#mappingOverlay").innerHTML = [...visible, ...(mapping.draft ? [mapping.draft] : [])].map(region => `<div class="mapping-box" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("");
+}
+
 function renderMapping() {
   const mapping = state.mapping;
-  $("#mappingImage").src = `/api/documents/${mapping.documentId}/pages/${mapping.page}.png`;
+  const imageUrl = `/api/documents/${mapping.documentId}/pages/${mapping.page}.png`;
+  if (!$("#mappingImage").src.endsWith(imageUrl)) $("#mappingImage").src = imageUrl;
   $("#mappingPageLabel").textContent = `Page ${mapping.page} of ${mapping.pageCount}`;
   $("#mappingPrevious").disabled = mapping.page <= 1;
   $("#mappingNext").disabled = mapping.page >= mapping.pageCount;
-  const labels = Object.fromEntries([...$("#mappingField").options].map(option => [option.value, option.textContent]));
-  const visible = mapping.regions.filter(region => region.page === mapping.page);
-  $("#mappingOverlay").innerHTML = [...visible, ...(mapping.draft ? [mapping.draft] : [])].map(region => `<div class="mapping-box" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("");
+  const labels = mappingLabels();
+  renderMappingBoxes();
   $("#mappingRegionList").innerHTML = mapping.regions.map((region, index) => `<button class="mini-button" data-remove-region="${index}">${escapeHtml(labels[region.field] || region.field)} · p${region.page} ×</button>`).join("");
 }
 
@@ -613,12 +624,15 @@ mappingOverlay.addEventListener("pointermove", event => {
   state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
     x: Math.min(start.x, point.x), y: Math.min(start.y, point.y),
     width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
-  renderMapping();
+  renderMappingBoxes();
 });
-mappingOverlay.addEventListener("pointerup", () => {
+function finishMappingDrag() {
   if (state.mapping.draft?.width > .005 && state.mapping.draft?.height > .005) state.mapping.regions.push(state.mapping.draft);
   state.mapping.start = null; state.mapping.draft = null; renderMapping();
-});
+}
+mappingOverlay.addEventListener("pointerup", finishMappingDrag);
+mappingOverlay.addEventListener("pointercancel", finishMappingDrag);
+$("#mappingImage").addEventListener("load", renderMappingBoxes);
 
 document.addEventListener("keydown", event => {
   const opener = event.target.closest?.("[data-open-invoice]");
