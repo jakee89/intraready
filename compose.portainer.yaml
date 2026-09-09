@@ -1,8 +1,5 @@
 services:
   intraready:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: intraready:0.1.0
     container_name: intraready
     restart: unless-stopped
@@ -25,11 +22,6 @@ services:
       - ALL
     tmpfs:
       - /tmp:size=128m,noexec,nosuid
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 2G
 
   ollama:
     image: ollama/ollama:latest

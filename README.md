@@ -8,6 +8,7 @@ The app intentionally stops before government submission. It prepares and valida
 
 - Multiple PDF upload with file-signature, size and exact-duplicate checks
 - Native PDF text extraction and safe manual fallback
+- Automatic local OCR and Ollama extraction for unfamiliar supplier layouts
 - Tested layout adapters for the supplied Stricker and midocean examples
 - Side-by-side PDF and editable invoice/line review
 - Blocking issue list, row filters, tooltips and in-app guide
@@ -16,6 +17,8 @@ The app intentionally stops before government submission. It prepares and valida
 - Exact reconciliation of goods/charges against the invoice total
 - Approval invalidation after edits or organisation-profile changes
 - Effective product memory keyed by supplier VAT and SKU
+- Remembered unit net weight with automatic total-row weight calculation
+- Safe combination of equivalent colour or description variants
 - Arrival and dispatch flows with period preview based on the actual movement date
 - Supplementary quantity and special commodity fields where the Malta format requires them
 - Export history with a place to record the NSO portal receipt reference
@@ -25,7 +28,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Optional HTTP Basic Authentication for a private server
 - SQLite schema already scoped by organisation ID for a future tenant/auth migration
 
-OCR, local AI extraction, CN-list importing, receipt-file upload and automatic NSO portal submission are not included in this first version. Manual review works without them. The XML schema is not bundled because the NSO download returned a Cloudflare block page during development; use the one-time schema upload in Organisation settings.
+CN-list importing, receipt-file upload and automatic NSO portal submission are not included. Manual review remains required. The XML schema is not bundled because the NSO download returned a Cloudflare block page during development; use the one-time schema upload in Organisation settings.
 
 ## Run locally
 
@@ -58,7 +61,11 @@ docker compose up -d --build
 
 Open `http://SERVER-IP:8088`. The Basic Authentication username is `intrastat`; the password is `INTRASTAT_APP_PASSWORD`.
 
+The Compose stack also starts Ollama and downloads the configured local model. The first download can take several minutes. The `intraready-ai-setup` container exits after the model is installed; that is expected. Unknown invoices can be retried with **Extract again** if they were uploaded before the model became ready.
+
 For Portainer, either deploy `compose.yaml` from a Git repository (so its build context is available), or build the image on the server first with `docker build -t intraready:0.1.0 .` and create a stack from the same Compose definition after removing its `build:` block. The named `intraready_data` volume contains the database, source PDFs, schema and exports.
+
+For the existing Portainer web-editor installation, use `compose.portainer.yaml`. It keeps the locally built `intraready:0.1.0` image and adds the local Ollama service without changing the existing data-volume name.
 
 Before exposing the service outside the LAN, put it behind an authenticated HTTPS reverse proxy or VPN. Basic Authentication is a practical private-server gate; a public SaaS needs proper accounts, password recovery, per-tenant authorization, rate limits, object storage, PostgreSQL, background jobs, monitoring and a privacy/retention policy.
 

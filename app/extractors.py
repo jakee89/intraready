@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pdfplumber
 
+from .local_ai import extract_structured_invoice
+
 
 COUNTRY_NAMES = {
     "Austria": "AT", "Belgium": "BE", "Bulgaria": "BG", "Croatia": "HR",
@@ -72,6 +74,53 @@ def _base_draft(filename: str, text: str, pages: int) -> dict:
         "adapter": "general",
         "lines": [],
     }
+
+
+def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
+    text_fields = ("supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number",
+                   "currency", "consignment_country", "terms_delivery")
+    for field in text_fields:
+        value = str(extracted.get(field, "")).strip()
+        if value:
+            draft[field] = value.upper() if field in {"supplier_vat_country", "currency", "consignment_country", "terms_delivery"} else value
+    date_value = _iso_date(str(extracted.get("invoice_date", "")))
+    if date_value:
+        draft["invoice_date"] = date_value
+    total = _money(str(extracted.get("total_value", "")))
+    if total:
+        draft["total_value"] = total
+    lines = []
+    for item in extracted.get("lines", []):
+        if not isinstance(item, dict) or not str(item.get("description", "")).strip():
+            continue
+        kind = item.get("line_kind") if item.get("line_kind") in {"goods", "charge"} else "goods"
+        quantity = _money(str(item.get("quantity", "")))
+        unit_mass = _money(str(item.get("unit_net_mass", "")))
+        total_mass = _money(str(item.get("net_mass", "")))
+        if not total_mass and unit_mass and quantity:
+            total_mass = format(Decimal(unit_mass) * Decimal(quantity), "f")
+        raw_code = re.sub(r"\D", "", str(item.get("commodity_code", "")))
+        invoice_value = _money(str(item.get("invoice_value", "")))
+        statistical_value = _money(str(item.get("statistical_value", "")))
+        lines.append({
+            "sku": str(item.get("sku", "")).strip(),
+            "description": str(item.get("description", "")).strip(),
+            "quantity": quantity, "unit": str(item.get("unit", "")).strip().upper(),
+            "raw_commodity_code": raw_code, "hs_code": raw_code[:8],
+            "origin_country": str(item.get("origin_country", "")).strip().upper(),
+            "invoice_value": invoice_value,
+            "statistical_value": statistical_value or (invoice_value if kind == "goods" else ""),
+            "unit_net_mass": unit_mass, "net_mass": total_mass,
+            "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "",
+            "line_kind": kind, "reviewed": False,
+            "source_page": item.get("source_page") if isinstance(item.get("source_page"), int) else 1,
+            "confidence": "local-ai", "notes": "Verify against the source PDF.",
+        })
+    if lines:
+        draft["lines"] = lines
+        draft["adapter"] = "local-ai"
+        draft["notes"] += " Local AI created review suggestions; none are approved automatically."
+    return draft
 
 
 def _parse_stricker(draft: dict, page_lines: list[list[str]], text: str) -> dict:
@@ -194,9 +243,19 @@ def extract_invoice(path: Path, display_name: str | None = None) -> tuple[dict, 
     digest = hashlib.sha256(data).hexdigest()
     page_lines: list[list[str]] = []
     page_texts: list[str] = []
+    used_ocr = False
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+            if len(text.strip()) < 40:
+                try:
+                    import pytesseract
+                    ocr_text = pytesseract.image_to_string(page.to_image(resolution=200).original)
+                    if len(ocr_text.strip()) > len(text.strip()):
+                        text = ocr_text
+                        used_ocr = True
+                except Exception:
+                    pass
             page_texts.append(text)
             page_lines.append(text.splitlines())
     combined = "\n".join(page_texts)
@@ -205,6 +264,17 @@ def extract_invoice(path: Path, display_name: str | None = None) -> tuple[dict, 
         draft = _parse_stricker(draft, page_lines, combined)
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
         draft = _parse_midocean(draft, page_lines, combined)
+    else:
+        marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
+        ai_result, ai_message = extract_structured_invoice(marked_text)
+        if ai_result:
+            draft = _apply_ai_draft(draft, ai_result)
+        elif ai_message:
+            draft["notes"] += " " + ai_message
+    if used_ocr:
+        draft["notes"] += " One or more pages were read with local OCR."
+        if draft["adapter"] == "general":
+            draft["adapter"] = "ocr"
     if not draft["lines"]:
         draft["notes"] += " No reliable goods table was detected; add lines manually."
     if any(not page.strip() for page in page_texts):

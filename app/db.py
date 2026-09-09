@@ -85,7 +85,9 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
     origin_country TEXT NOT NULL DEFAULT '',
     invoice_value TEXT NOT NULL DEFAULT '',
     statistical_value TEXT NOT NULL DEFAULT '',
+    unit_net_mass TEXT NOT NULL DEFAULT '',
     net_mass TEXT NOT NULL DEFAULT '',
+    net_mass_overridden INTEGER NOT NULL DEFAULT 0,
     supp_qty TEXT NOT NULL DEFAULT '',
     supp_unit TEXT NOT NULL DEFAULT '',
     special_quantity TEXT NOT NULL DEFAULT '',
@@ -183,9 +185,12 @@ def init_db() -> None:
     with transaction() as connection:
         connection.executescript(SCHEMA)
         existing_line_columns = {item[1] for item in connection.execute("PRAGMA table_info(invoice_lines)")}
-        for column in ("special_quantity", "collector_type", "range_value"):
+        text_columns = ("special_quantity", "collector_type", "range_value", "unit_net_mass")
+        for column in text_columns:
             if column not in existing_line_columns:
                 connection.execute(f"ALTER TABLE invoice_lines ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        if "net_mass_overridden" not in existing_line_columns:
+            connection.execute("ALTER TABLE invoice_lines ADD COLUMN net_mass_overridden INTEGER NOT NULL DEFAULT 0")
         now = utc_now()
         connection.execute(
             "INSERT OR IGNORE INTO organisations(id, name, created_at) VALUES(1, ?, ?)",
@@ -198,11 +203,17 @@ def init_db() -> None:
 
 
 def rows(query: str, params: tuple = ()) -> list[dict]:
-    with connect() as connection:
+    connection = connect()
+    try:
         return [dict(row) for row in connection.execute(query, params).fetchall()]
+    finally:
+        connection.close()
 
 
 def row(query: str, params: tuple = ()) -> dict | None:
-    with connect() as connection:
+    connection = connect()
+    try:
         found = connection.execute(query, params).fetchone()
         return dict(found) if found else None
+    finally:
+        connection.close()

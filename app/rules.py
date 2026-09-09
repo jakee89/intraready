@@ -92,6 +92,7 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
             inv_value = decimal_or_none(line.get("invoice_value"))
             stat_value = decimal_or_none(line.get("statistical_value"))
             mass = decimal_or_none(line.get("net_mass"))
+            unit_mass = decimal_or_none(line.get("unit_net_mass"))
             qty = decimal_or_none(line.get("quantity"))
             if inv_value is not None and inv_value < 0:
                 add("negative_goods_value", "A negative goods value needs the amendment or credit-note workflow.", "invoice_value", line.get("id"))
@@ -99,6 +100,8 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
                 add("stat_below_invoice", "Statistical value cannot be below invoice value.", "statistical_value", line.get("id"))
             if mass is not None and mass <= 0:
                 add("invalid_mass", "Net mass must be greater than zero.", "net_mass", line.get("id"))
+            if unit_mass is not None and unit_mass <= 0:
+                add("invalid_unit_mass", "Unit net mass must be greater than zero.", "unit_net_mass", line.get("id"))
             if qty is not None and qty <= 0:
                 add("invalid_quantity", "Quantity must be greater than zero.", "quantity", line.get("id"))
             if not line.get("reviewed"):

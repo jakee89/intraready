@@ -1,5 +1,7 @@
 # Next feature update: smarter invoice extraction and weights
 
+**Status:** Implemented in IntraReady 0.2.0.
+
 ## Objective
 
 Make unfamiliar supplier invoices extract automatically with minimal setup, calculate declaration weight correctly, and combine equivalent product variants while preserving a review trail.

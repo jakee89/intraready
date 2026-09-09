@@ -6,7 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN groupadd --system intraready && useradd --system --gid intraready --home /app intraready
+RUN groupadd --system intraready && useradd --system --gid intraready --home /app intraready \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --requirement requirements.txt

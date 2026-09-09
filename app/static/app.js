@@ -192,7 +192,7 @@ function renderReview() {
   const document = invoice.document;
   $("#reviewContent").innerHTML = `
     <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions"><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-actions">${document && ["general", "ocr", "local-ai"].includes(document.extraction_method) && invoice.status !== "submitted" ? `<button id="extractAgainButton" class="button quiet" title="Run OCR and local AI again; reviewed rows are protected">Extract again</button>` : ""}<button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
@@ -203,10 +203,10 @@ function renderReview() {
           <div class="issue-summary ${invoice.readiness.ready ? "ready" : ""}"><span class="issue-count">${invoice.readiness.ready ? "✓" : invoice.readiness.blocking_count}</span><div><strong>${invoice.readiness.ready ? "Ready for approval" : `${invoice.readiness.blocking_count} checks remaining`}</strong><p>${invoice.readiness.ready ? "All required data is present and every row has been reviewed." : "Work through the highlighted fields and rows below."}</p></div></div>
           ${issues.length ? `<div class="issue-list">${issues.slice(0, 8).map(issue => `<div class="issue"><span>•</span><span>${escapeHtml(issue.message)}</span>${issue.line_id ? `<button data-focus-line="${issue.line_id}">Show row</button>` : ""}</div>`).join("")}${issues.length > 8 ? `<div class="issue"><span>+</span><span>${issues.length - 8} more checks are highlighted in the table.</span></div>` : ""}</div>` : ""}
         </article>
-        <article class="panel review-section"><div class="section-title"><div><h3>Goods and charges</h3><p>Internal reference details remain here and stay out of XML.</p></div><div class="line-toolbar"><select id="lineFilter"><option value="all">All rows</option><option value="issues">Rows with issues</option><option value="unreviewed">Unreviewed</option><option value="goods">Goods only</option><option value="charges">Charges only</option></select><button id="addLineSmallButton" class="button secondary">Add</button></div></div>
+        <article class="panel review-section"><div class="section-title"><div><h3>Goods and charges</h3><p>Internal reference details remain here and stay out of XML.</p></div><div class="line-toolbar"><select id="lineFilter"><option value="all">All rows</option><option value="issues">Rows with issues</option><option value="unreviewed">Unreviewed</option><option value="goods">Goods only</option><option value="charges">Charges only</option></select><button id="combineRowsButton" class="button quiet" title="Combine rows only when their Intrastat classification fields match">Combine equivalent</button><button id="addLineSmallButton" class="button secondary">Add</button></div></div>
           <div class="charge-guide"><strong>Charge treatment:</strong> choose “Add to invoice value” for costs that form part of the goods purchase, “Statistical only” for relevant transport/insurance, or exclude a service with a note. Confirm the correct treatment for your case.</div>
-          <div class="data-table-wrap"><table class="data-table line-table"><thead><tr><th>Type</th><th>SKU / description</th><th>Qty</th><th>CN code</th><th>Origin</th><th>Invoice €</th><th>Stat €</th><th>Net kg</th><th>Reviewed</th><th>Actions</th></tr></thead><tbody id="lineTableBody">
-          ${invoice.lines.map(line => lineRow(line, invoice.lines, issueLines)).join("") || `<tr><td class="empty-row" colspan="10">No rows were extracted. Add the first goods row manually.</td></tr>`}
+          <div class="data-table-wrap"><table class="data-table line-table"><thead><tr><th>Type</th><th>SKU / description</th><th>Qty</th><th>CN code</th><th>Origin</th><th>Invoice €</th><th>Stat €</th><th>Unit kg</th><th>Total kg</th><th>Reviewed</th><th>Actions</th></tr></thead><tbody id="lineTableBody">
+          ${invoice.lines.map(line => lineRow(line, invoice.lines, issueLines)).join("") || `<tr><td class="empty-row" colspan="11">No rows were extracted. Add the first goods row manually.</td></tr>`}
           </tbody></table></div>
         </article>
       </div>
@@ -225,7 +225,8 @@ function lineRow(line, allLines, issueLines) {
     <td><input data-line-id="${line.id}" data-line-field="origin_country" value="${escapeHtml(line.origin_country)}" maxlength="2" ${line.line_kind!=="goods"?"disabled":""}></td>
     <td><input data-line-id="${line.id}" data-line-field="invoice_value" value="${escapeHtml(line.invoice_value)}" inputmode="decimal"></td>
     <td><input data-line-id="${line.id}" data-line-field="statistical_value" value="${escapeHtml(line.statistical_value)}" inputmode="decimal" ${line.line_kind!=="goods"?"disabled":""}></td>
-    <td><input data-line-id="${line.id}" data-line-field="net_mass" value="${escapeHtml(line.net_mass)}" inputmode="decimal" ${line.line_kind!=="goods"?"disabled":""}></td>
+    <td><input data-line-id="${line.id}" data-line-field="unit_net_mass" value="${escapeHtml(line.unit_net_mass)}" inputmode="decimal" title="Net weight of one unit; remembered by supplier and SKU" ${line.line_kind!=="goods"?"disabled":""}></td>
+    <td><input data-line-id="${line.id}" data-line-field="net_mass" value="${escapeHtml(line.net_mass)}" inputmode="decimal" title="Total row weight used for Intrastat${line.net_mass_overridden ? " · manually overridden" : " · quantity × unit weight"}" ${line.line_kind!=="goods"?"disabled":""}></td>
     <td><input type="checkbox" data-line-id="${line.id}" data-line-field="reviewed" ${line.reviewed?"checked":""} aria-label="Mark row reviewed"></td>
     <td><div class="row-actions"><button class="mini-button" data-edit-line="${line.id}" title="Edit all row fields">Details</button>${line.line_kind==="goods" ? `<button class="mini-button" data-remember-line="${line.id}" title="Save verified product facts for this supplier and SKU">Remember</button>` : ""}<button class="mini-button delete" data-delete-line="${line.id}">Delete</button></div><small class="subline">Page ${line.source_page || "—"}</small></td>
   </tr>`;
@@ -390,6 +391,20 @@ document.addEventListener("click", async event => {
     return;
   }
   if (event.target.closest("#addLineButton") || event.target.closest("#addLineSmallButton")) { openLineDialog(); return; }
+  const extractAgain = event.target.closest("#extractAgainButton");
+  if (extractAgain) {
+    if (!confirm("Run extraction again? Existing unreviewed suggestions will be replaced; reviewed rows are protected.")) return;
+    extractAgain.disabled = true; extractAgain.textContent = "Extracting…";
+    try { state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/extract-again`, { method: "POST" }); await refreshBootstrap(); renderReview(); toast("Extraction suggestions updated"); }
+    catch (error) { extractAgain.disabled = false; extractAgain.textContent = "Extract again"; toast(error.message, "error"); }
+    return;
+  }
+  if (event.target.closest("#combineRowsButton")) {
+    if (!confirm("Combine goods rows whose Intrastat classification fields match? Original details will be kept in the row notes.")) return;
+    try { const updated = await api(`/api/invoices/${state.currentInvoice.id}/combine-equivalent`, { method: "POST" }); state.currentInvoice = updated; await refreshBootstrap(); renderReview(); toast(updated.combined_groups ? `${updated.combined_groups} equivalent group(s) combined` : "No equivalent rows found"); }
+    catch (error) { toast(error.message, "error"); }
+    return;
+  }
   const editLine = event.target.closest("[data-edit-line]");
   if (editLine) { openLineDialog(editLine.dataset.editLine); return; }
   if (event.target.closest("#addCatalogueButton")) { openCatalogueDialog(); return; }
@@ -458,6 +473,13 @@ $("#lineForm").addEventListener("submit", async event => {
   const method = lineId ? "PATCH" : "POST";
   try { state.currentInvoice = await api(endpoint, { method, body: JSON.stringify(body) }); $("#lineDialog").close(); await refreshBootstrap(); renderReview(); toast(lineId ? "Row saved" : "Row added"); }
   catch (error) { toast(error.message, "error"); }
+});
+
+$("#lineForm").addEventListener("input", event => {
+  if (!event.target.matches('[name="quantity"], [name="unit_net_mass"]')) return;
+  const quantity = Number(event.currentTarget.elements.quantity.value);
+  const unitMass = Number(event.currentTarget.elements.unit_net_mass.value);
+  if (Number.isFinite(quantity) && Number.isFinite(unitMass)) event.currentTarget.elements.net_mass.value = String(quantity * unitMass);
 });
 
 $("#catalogueForm").addEventListener("submit", async event => {

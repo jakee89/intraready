@@ -14,6 +14,8 @@ SCHEMA_DIR = DATA_DIR / "schemas"
 MAX_UPLOAD_BYTES = int(os.getenv("INTRASTAT_MAX_UPLOAD_MB", "20")) * 1024 * 1024
 APP_PASSWORD = os.getenv("INTRASTAT_APP_PASSWORD", "")
 APP_TITLE = os.getenv("INTRASTAT_APP_TITLE", "IntraReady")
+OLLAMA_URL = os.getenv("INTRASTAT_OLLAMA_URL", "")
+OLLAMA_MODEL = os.getenv("INTRASTAT_OLLAMA_MODEL", "qwen2.5:3b")
 
 
 def ensure_directories() -> None:

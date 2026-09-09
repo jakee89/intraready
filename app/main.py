@@ -33,7 +33,7 @@ INVOICE_FIELDS = {
 }
 LINE_FIELDS = {
     "sku", "description", "quantity", "unit", "raw_commodity_code", "hs_code",
-    "origin_country", "invoice_value", "statistical_value", "net_mass", "supp_qty",
+    "origin_country", "invoice_value", "statistical_value", "unit_net_mass", "net_mass", "net_mass_overridden", "supp_qty",
     "supp_unit", "special_quantity", "collector_type", "range_value", "line_kind",
     "linked_line_id", "reviewed", "source_page", "confidence", "notes",
 }
@@ -45,7 +45,7 @@ UPPER_FIELDS = {
     "supplier_vat_country", "currency", "consignment_country", "terms_delivery", "flow",
     "unit", "hs_code", "origin_country", "supp_unit", "default_flow",
 }
-DECIMAL_FIELDS = {"total_value", "quantity", "invoice_value", "statistical_value", "net_mass", "supp_qty", "special_quantity", "unit_net_mass"}
+DECIMAL_FIELDS = {"total_value", "quantity", "invoice_value", "statistical_value", "unit_net_mass", "net_mass", "supp_qty", "special_quantity"}
 
 
 @asynccontextmanager
@@ -55,7 +55,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.1.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.2.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -108,7 +108,7 @@ def _payload(invoice_id: int) -> dict:
 
 
 def _clean_value(field: str, value):
-    if field == "reviewed":
+    if field in {"reviewed", "net_mass_overridden"}:
         return 1 if value else 0
     if field == "linked_line_id" and value in ("", None):
         return None
@@ -163,8 +163,11 @@ def _suggest_from_catalogue(connection, invoice_id: int):
         for field in ("hs_code", "origin_country", "supp_unit"):
             if not line[field] and fact[field]:
                 updates[field] = fact[field]
-        if not line["net_mass"] and fact["unit_net_mass"] and line["quantity"]:
+        if fact["unit_net_mass"] and not line.get("net_mass_overridden"):
+            updates["unit_net_mass"] = fact["unit_net_mass"]
+        if fact["unit_net_mass"] and line["quantity"] and not line.get("net_mass_overridden"):
             updates["net_mass"] = format(Decimal(fact["unit_net_mass"]) * Decimal(line["quantity"]), "f")
+            updates["net_mass_overridden"] = 0
         if updates:
             updates["confidence"] = "catalogue-suggested"
             assignments = ", ".join(f"{field} = ?" for field in updates)
@@ -289,6 +292,42 @@ def document_file(document_id: int):
     )
 
 
+@app.post("/api/invoices/{invoice_id}/extract-again")
+def extract_again(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    if invoice["status"] == "submitted":
+        raise HTTPException(409, "Submitted invoices are locked.")
+    if any(item["reviewed"] for item in _lines(invoice_id)):
+        raise HTTPException(409, "Extraction cannot replace reviewed rows. Uncheck them first if you want to retry.")
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    if not document:
+        raise HTTPException(422, "This manual invoice has no PDF to extract.")
+    draft, extracted_text, _ = extract_invoice(UPLOAD_DIR / document["storage_name"], document["filename"])
+    if not draft["lines"]:
+        raise HTTPException(503, draft["notes"])
+    extraction_fields = ("supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number",
+                         "invoice_date", "currency", "total_value", "consignment_country", "mode_transport", "terms_delivery")
+    updates = {field: draft[field] for field in extraction_fields if draft.get(field)}
+    updates["notes"] = draft["notes"]
+    now = utc_now()
+    with transaction() as connection:
+        connection.execute("DELETE FROM invoice_lines WHERE invoice_id=?", (invoice_id,))
+        for position, line in enumerate(draft["lines"], 1):
+            values = {field: line.get(field, "") for field in LINE_FIELDS if field != "linked_line_id"}
+            values["reviewed"] = 0
+            columns = list(values)
+            connection.execute(
+                f"INSERT INTO invoice_lines(invoice_id,position,{','.join(columns)},created_at,updated_at) VALUES(?,?,{','.join('?' for _ in columns)},?,?)",
+                (invoice_id, position, *(values[column] for column in columns), now, now),
+            )
+        assignments = ", ".join(f"{field}=?" for field in updates)
+        connection.execute(f"UPDATE invoices SET {assignments},status='needs_review',revision=revision+1,updated_at=? WHERE id=?", (*updates.values(), now, invoice_id))
+        connection.execute("UPDATE documents SET extracted_text=?,extraction_method=? WHERE id=?", (extracted_text, draft["adapter"], document["id"]))
+        _suggest_from_catalogue(connection, invoice_id)
+        _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"]})
+    return _payload(invoice_id)
+
+
 @app.post("/api/invoices")
 def create_manual_invoice():
     profile = _profile()
@@ -334,6 +373,13 @@ async def create_line(invoice_id: int, request: Request):
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
     body = await request.json()
     values = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
+    if values.get("unit_net_mass") and values.get("quantity"):
+        calculated = format(Decimal(values["unit_net_mass"]) * Decimal(values["quantity"]), "f")
+        if not values.get("net_mass"):
+            values["net_mass"] = calculated
+        values["net_mass_overridden"] = 1 if Decimal(values["net_mass"]) != Decimal(calculated) else 0
+    elif values.get("net_mass"):
+        values["net_mass_overridden"] = 1
     values.setdefault("line_kind", "goods")
     values.setdefault("reviewed", 0)
     now = utc_now()
@@ -357,6 +403,17 @@ async def update_line(line_id: int, request: Request):
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
     body = await request.json()
     updates = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
+    if "unit_net_mass" in updates:
+        quantity = updates.get("quantity", found["quantity"])
+        calculated = format(Decimal(updates["unit_net_mass"]) * Decimal(quantity), "f") if updates["unit_net_mass"] and quantity else ""
+        supplied_total = updates.get("net_mass")
+        updates["net_mass_overridden"] = 1 if supplied_total not in (None, "") and Decimal(supplied_total) != Decimal(calculated or "0") else 0
+        if not updates["net_mass_overridden"]:
+            updates["net_mass"] = calculated
+    elif "quantity" in updates and found.get("unit_net_mass") and not found.get("net_mass_overridden"):
+        updates["net_mass"] = format(Decimal(found["unit_net_mass"]) * Decimal(updates["quantity"]), "f") if updates["quantity"] else ""
+    elif "net_mass" in updates:
+        updates["net_mass_overridden"] = 1
     if "line_kind" in updates and updates["line_kind"] not in {"goods", "charge", "charge_invoice", "charge_stat", "excluded"}:
         raise HTTPException(422, "Unsupported row type")
     if "linked_line_id" in updates and updates["linked_line_id"] is not None:
@@ -403,6 +460,65 @@ def delete_invoice(invoice_id: int):
     if document:
         (UPLOAD_DIR / document["storage_name"]).unlink(missing_ok=True)
     return {"deleted": True}
+
+
+@app.post("/api/invoices/{invoice_id}/combine-equivalent")
+def combine_equivalent_lines(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    if invoice["status"] == "submitted":
+        raise HTTPException(409, "Submitted invoices are locked.")
+    invoice_lines = _lines(invoice_id)
+    groups: dict[tuple, list[dict]] = {}
+    for line in invoice_lines:
+        if line["line_kind"] != "goods" or not line["hs_code"] or not line["origin_country"]:
+            continue
+        key = (line["hs_code"], line["origin_country"], line["unit"], line["supp_unit"],
+               line["collector_type"], line["range_value"])
+        groups.setdefault(key, []).append(line)
+    combined_groups = 0
+    with transaction() as connection:
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            primary, duplicates = group[0], group[1:]
+            def total(field: str) -> Decimal:
+                return sum((Decimal(item[field]) for item in group if item.get(field)), Decimal("0"))
+            quantity = total("quantity")
+            net_mass = total("net_mass")
+            skus = {item["sku"] for item in group if item["sku"]}
+            details = "; ".join(
+                f"{item['sku'] or 'no SKU'} — {item['description']} (qty {item['quantity'] or '?'}, page {item['source_page'] or '?'})"
+                for item in group
+            )
+            summed = {
+                "sku": next(iter(skus)) if len(skus) == 1 else "",
+                "description": primary["description"] + f" (+{len(duplicates)} equivalent variant{'s' if len(duplicates) != 1 else ''})",
+                "quantity": format(quantity, "f"),
+                "invoice_value": format(total("invoice_value"), "f"),
+                "statistical_value": format(total("statistical_value"), "f"),
+                "net_mass": format(net_mass, "f"),
+                "unit_net_mass": format(net_mass / quantity, "f") if quantity > 0 and net_mass > 0 else "",
+                "net_mass_overridden": 0,
+                "supp_qty": format(total("supp_qty"), "f") if any(item["supp_qty"] for item in group) else "",
+                "special_quantity": format(total("special_quantity"), "f") if any(item["special_quantity"] for item in group) else "",
+                "reviewed": 1 if all(item["reviewed"] for item in group) else 0,
+                "confidence": "combined",
+                "notes": (primary["notes"] + "\n" if primary["notes"] else "") + "Combined source rows: " + details,
+            }
+            assignments = ", ".join(f"{field}=?" for field in summed)
+            connection.execute(f"UPDATE invoice_lines SET {assignments},updated_at=? WHERE id=?", (*summed.values(), utc_now(), primary["id"]))
+            duplicate_ids = [item["id"] for item in duplicates]
+            placeholders = ",".join("?" for _ in duplicate_ids)
+            connection.execute(f"UPDATE invoice_lines SET linked_line_id=? WHERE linked_line_id IN ({placeholders})", (primary["id"], *duplicate_ids))
+            connection.execute(f"DELETE FROM invoice_lines WHERE id IN ({placeholders})", duplicate_ids)
+            combined_groups += 1
+        if combined_groups:
+            for position, existing in enumerate(connection.execute("SELECT id FROM invoice_lines WHERE invoice_id=? ORDER BY position", (invoice_id,)), 1):
+                connection.execute("UPDATE invoice_lines SET position=? WHERE id=?", (position, existing[0]))
+            _invalidate(connection, invoice_id, "equivalent_lines_combined", {"groups": combined_groups})
+    result = _payload(invoice_id)
+    result["combined_groups"] = combined_groups
+    return result
 
 
 @app.post("/api/invoices/{invoice_id}/approve")
@@ -461,9 +577,9 @@ def save_catalogue_from_line(line_id: int):
                    FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?""", (line_id,))
     if not found or found["organisation_id"] != ORG_ID or not found["sku"]:
         raise HTTPException(422, "This line needs a SKU before it can be remembered")
-    unit_mass = ""
+    unit_mass = found.get("unit_net_mass", "")
     try:
-        if Decimal(found["quantity"]) > 0 and Decimal(found["net_mass"]) > 0:
+        if not unit_mass and Decimal(found["quantity"]) > 0 and Decimal(found["net_mass"]) > 0:
             unit_mass = format(Decimal(found["net_mass"]) / Decimal(found["quantity"]), "f")
     except (InvalidOperation, TypeError):
         pass
