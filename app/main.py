@@ -389,6 +389,22 @@ def delete_line(line_id: int):
     return _payload(found["invoice_id"])
 
 
+@app.delete("/api/invoices/{invoice_id}")
+def delete_invoice(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    if invoice["status"] == "submitted":
+        raise HTTPException(409, "Submitted invoices are locked and cannot be deleted.")
+    document = row("SELECT storage_name FROM documents WHERE id=?", (invoice.get("document_id"),)) if invoice.get("document_id") else None
+    with transaction() as connection:
+        connection.execute("DELETE FROM invoices WHERE id=? AND organisation_id=?", (invoice_id, ORG_ID))
+        if invoice.get("document_id"):
+            connection.execute("DELETE FROM documents WHERE id=? AND organisation_id=?", (invoice["document_id"], ORG_ID))
+        _record_event(connection, None, "invoice_deleted", {"invoice_number": invoice["invoice_number"]})
+    if document:
+        (UPLOAD_DIR / document["storage_name"]).unlink(missing_ok=True)
+    return {"deleted": True}
+
+
 @app.post("/api/invoices/{invoice_id}/approve")
 def approve_invoice(invoice_id: int):
     invoice = _invoice(invoice_id)

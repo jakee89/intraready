@@ -137,10 +137,10 @@ function renderInvoiceTable() {
   if (!target || !state.bootstrap) return;
   const filter = $("#invoiceFilter")?.value || "all";
   const invoices = state.bootstrap.invoices.filter(item => filter === "all" || item.status === filter || (filter === "needs_review" && item.status === "draft"));
-  target.innerHTML = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Supplier / reference</th><th>Movement date</th><th>Goods rows</th><th>Total</th><th>Issues</th><th>Status</th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => `
+  target.innerHTML = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Supplier / reference</th><th>Movement date</th><th>Goods rows</th><th>Total</th><th>Issues</th><th>Status</th><th>Actions</th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => `
     <tr data-open-invoice="${invoice.id}" tabindex="0"><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}</span></td>
     <td>${escapeHtml(formatDate(invoice.arrival_date))}</td><td>${invoice.goods_count}</td><td class="amount">${formatMoney(invoice.total_value, invoice.currency)}</td>
-    <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="6">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
+    <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td><td>${invoice.status === "submitted" ? "—" : `<button class="mini-button delete" data-delete-invoice="${invoice.id}" aria-label="Delete invoice ${escapeHtml(invoice.invoice_number || "draft")}">Delete</button>`}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="7">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
 }
 
 async function openInvoice(invoiceId) {
@@ -356,7 +356,7 @@ async function processFiles(files) {
   [...files].forEach(file => form.append("files", file));
   try {
     const response = await api("/api/upload", { method: "POST", body: form });
-    target.innerHTML = response.results.map(result => `<div class="upload-result ${result.error ? "error" : ""}"><span class="file-icon">PDF</span><strong>${escapeHtml(result.filename)}</strong><span>${result.error ? escapeHtml(result.error) : result.duplicate ? "Already in workspace" : `Draft ready · ${escapeHtml(result.adapter)}`}</span>${result.invoice_id ? `<button class="button secondary" data-open-invoice="${result.invoice_id}">Review</button>` : ""}</div>`).join("");
+    target.innerHTML = response.results.map(result => `<div class="upload-result ${result.error ? "error" : ""}"><span class="file-icon">PDF</span><strong>${escapeHtml(result.filename)}</strong><span>${result.error ? escapeHtml(result.error) : result.duplicate ? "Already in workspace" : `Draft ready · ${escapeHtml(result.adapter)}`}</span>${result.invoice_id ? `<button class="button secondary" data-open-invoice="${result.invoice_id}">Review</button><button class="mini-button delete" data-delete-invoice="${result.invoice_id}">Delete</button>` : ""}</div>`).join("");
     await refreshBootstrap();
     toast("Invoice processing complete");
   } catch (error) {
@@ -367,6 +367,20 @@ async function processFiles(files) {
 document.addEventListener("click", async event => {
   const nav = event.target.closest("[data-nav]");
   if (nav) { event.preventDefault(); navigate(nav.dataset.nav); return; }
+  const deleteInvoice = event.target.closest("[data-delete-invoice]");
+  if (deleteInvoice) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!confirm("Delete this invoice and its stored PDF? This cannot be undone.")) return;
+    try {
+      await api(`/api/invoices/${deleteInvoice.dataset.deleteInvoice}`, { method: "DELETE" });
+      deleteInvoice.closest(".upload-result")?.remove();
+      await refreshBootstrap();
+      renderInvoiceTable();
+      toast("Invoice deleted");
+    } catch (error) { toast(error.message, "error"); }
+    return;
+  }
   const opener = event.target.closest("[data-open-invoice]");
   if (opener) { event.preventDefault(); openInvoice(opener.dataset.openInvoice); return; }
   if (event.target.closest("#menuButton")) { document.body.classList.toggle("menu-open"); return; }
