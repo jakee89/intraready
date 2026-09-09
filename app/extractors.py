@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import base64
-import io
 import json
 import re
 from collections import OrderedDict
@@ -12,7 +10,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from .local_ai import extract_structured_invoice
+from .cloud_ai import extract_structured_invoice
 
 
 COUNTRY_NAMES = {
@@ -36,20 +34,6 @@ def layout_fingerprint(path: Path) -> str:
         return hashlib.sha256(("|".join(parts + words)).encode()).hexdigest()[:20]
     except Exception:
         return ""
-
-
-def _vision_pages(path: Path, maximum: int = 6) -> list[str]:
-    images = []
-    try:
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages[:maximum]:
-                rendered = page.to_image(resolution=150).original.convert("RGB")
-                buffer = io.BytesIO()
-                rendered.save(buffer, format="JPEG", quality=82, optimize=True)
-                images.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
-    except Exception:
-        return images
-    return images
 
 
 def _money(value: str) -> str:
@@ -150,7 +134,7 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
             "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "",
             "line_kind": kind, "reviewed": False,
             "source_page": item.get("source_page") if isinstance(item.get("source_page"), int) else 1,
-            "confidence": "local-ai", "notes": (f"Barcode/EAN: {item.get('barcode')}. " if item.get("barcode") else "") + "Verify against the source PDF.",
+            "confidence": "api-ai", "notes": (f"Barcode/EAN: {item.get('barcode')}. " if item.get("barcode") else "") + "Verify against the source PDF.",
         })
     if lines:
         goods_positions = [index + 1 for index, line in enumerate(lines) if line["line_kind"] == "goods"]
@@ -164,8 +148,9 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
                 elif re.search(r"(?i)print|engraving|logo|personalisation|decoration", line["description"]):
                     line["line_kind"] = "charge_invoice"
         draft["lines"] = lines
-        draft["adapter"] = "local-ai"
-        draft["notes"] += " Local AI created review suggestions; none are approved automatically."
+        draft["adapter"] = "api-ai"
+        draft["notes"] += " API AI created review suggestions; none are approved automatically."
+    draft["suggested_layout"] = extracted.get("layout_regions", [])
     return draft
 
 
@@ -201,6 +186,20 @@ def _validate_and_normalise(draft: dict) -> dict:
     if warnings:
         draft["notes"] += " Checks: " + " ".join(warnings)
     return draft
+
+
+def _ensure_freight_line(draft: dict, text: str) -> None:
+    if any(line.get("line_kind") == "charge_stat" and re.search(r"(?i)freight|transport|shipping|carriage", line.get("description", "")) for line in draft.get("lines", [])):
+        return
+    found = re.search(r"(?im)^\s*(freight(?:\s+(?:costs?|charge))?|shipping|transport|carriage)\s*:?[ \t]*(?:EUR|€)?[ \t]*([\d.,]+)\s*(?:EUR|€)?\s*$", text)
+    if not found or not _money(found.group(2)):
+        return
+    goods_positions = [index for index, line in enumerate(draft.get("lines", []), 1) if line.get("line_kind") == "goods"]
+    draft.setdefault("lines", []).append({"sku": "", "description": found.group(1).title(), "quantity": "1", "unit": "",
+        "raw_commodity_code": "", "hs_code": "", "origin_country": "", "invoice_value": _money(found.group(2)),
+        "statistical_value": "", "unit_net_mass": "", "net_mass": "", "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "",
+        "line_kind": "charge_stat", "linked_position": goods_positions[0] if len(goods_positions) == 1 else None,
+        "reviewed": False, "source_page": 1, "confidence": "text-verified", "notes": "Freight detected separately from the goods table; confirm its allocation."})
 
 
 def _supplier_profile(text: str, profiles: list[dict] | None) -> dict | None:
@@ -381,7 +380,7 @@ def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]], text
                 })
             draft["lines"] = parsed
             draft["adapter"] = "fast-table"
-            draft["notes"] += " A reusable table layout was recognised; local AI was skipped."
+            draft["notes"] += " A reusable table layout was recognised; no API credits were used."
             return draft
     return draft
 
@@ -533,13 +532,12 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
         _apply_supplier_defaults(draft, matched_profile)
     if force_ai:
         marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
-        vision_pages = _vision_pages(path)
-        ai_result, ai_message = extract_structured_invoice(marked_text, vision_pages)
+        ai_result, ai_message, ai_meta = extract_structured_invoice(data, marked_text, display_name or path.name)
+        draft["ai_meta"] = ai_meta
         if ai_result:
             draft = _apply_ai_draft(draft, ai_result)
-            if vision_pages:
-                draft["adapter"] = "vision-ai"
-                draft["notes"] += " Invoice page images were analysed to preserve the table layout."
+            draft["adapter"] = "api-ai"
+            draft["notes"] += " The PDF pages were analysed to preserve the table layout."
             if matched_profile:
                 _apply_supplier_defaults(draft, matched_profile)
         elif ai_message:
@@ -549,15 +547,15 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
     ):
         draft = _parse_saved_mapping(path, draft, matched_profile)
         if not draft["lines"]:
-            marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
-            vision_pages = _vision_pages(path)
-            ai_result, ai_message = extract_structured_invoice(marked_text, vision_pages)
-            if ai_result:
-                draft = _apply_ai_draft(draft, ai_result)
-                _apply_supplier_defaults(draft, matched_profile)
-                draft["adapter"] = "vision-ai" if vision_pages else "local-ai"
-            elif ai_message:
-                draft["notes"] += " " + ai_message
+            draft["notes"] += " The saved layout did not produce reliable rows. Click Learn layout with AI if you want to spend one API request and create a new version."
+    elif matched_profile and matched_profile.get("layout_mapping"):
+        draft["notes"] += " The supplier layout appears to have changed. The previous template was kept. Click Learn layout with AI to create a new version; upload alone never uses API credits."
+        if "Paul Stricker" in combined:
+            draft = _parse_stricker(draft, page_lines, combined)
+        elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
+            draft = _parse_midocean(draft, page_lines, combined)
+        else:
+            draft = _parse_common_tables(draft, tables, combined)
     elif "Paul Stricker" in combined:
         draft = _parse_stricker(draft, page_lines, combined)
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
@@ -565,22 +563,12 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
     else:
         draft = _parse_common_tables(draft, tables, combined)
         if not draft["lines"]:
-            marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
-            vision_pages = _vision_pages(path)
-            ai_result, ai_message = extract_structured_invoice(marked_text, vision_pages)
-            if ai_result:
-                draft = _apply_ai_draft(draft, ai_result)
-                if vision_pages:
-                    draft["adapter"] = "vision-ai"
-                    draft["notes"] += " Invoice page images were analysed to preserve the table layout."
-                if matched_profile:
-                    _apply_supplier_defaults(draft, matched_profile)
-            elif ai_message:
-                draft["notes"] += " " + ai_message
+            draft["notes"] += " This layout is not known. Click Learn layout with AI to send this PDF for one API extraction and save a reusable supplier layout."
     if used_ocr:
         draft["notes"] += " One or more pages were read with local OCR."
         if draft["adapter"] == "general":
             draft["adapter"] = "ocr"
+    _ensure_freight_line(draft, combined)
     draft = _validate_and_normalise(draft)
     if not draft["lines"]:
         draft["notes"] += " No reliable goods table was detected; add lines manually."

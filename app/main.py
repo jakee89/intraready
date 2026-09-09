@@ -23,7 +23,7 @@ from .db import connect, init_db, row, rows, transaction, utc_now
 from .exporter import csv_bytes, declaration_rows, inspect_schema, sha256, xml_bytes
 from .extractors import extract_invoice, layout_fingerprint, preview_saved_mapping
 from .cn_reference import cn_requirement, search_cn
-from .local_ai import ai_status, rank_cn_candidates
+from .cloud_ai import ai_status, rank_cn_candidates
 from .rules import invoice_issues, readiness
 
 
@@ -60,17 +60,17 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.6.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.7.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
 @app.get("/api/ai/status")
-def local_ai_status():
+def cloud_ai_status():
     return ai_status(False)
 
 
 @app.post("/api/ai/test")
-def test_local_ai():
+def test_cloud_ai():
     return ai_status(True)
 
 
@@ -122,6 +122,7 @@ def _payload(invoice_id: int) -> dict:
     result["document"] = document
     result["readiness"] = readiness(invoice, lines_list, _profile())
     result["preparation"] = _preparation_summary(lines_list)
+    result["extraction_runs"] = rows("SELECT method,status,message,duration_ms,created_at FROM extraction_runs WHERE invoice_id=? ORDER BY id DESC LIMIT 5", (invoice_id,))
     return result
 
 
@@ -238,6 +239,31 @@ def _remember_supplier(connection, invoice: dict) -> None:
     )
 
 
+def _store_supplier_template(connection, invoice: dict, mapping: list[dict], fingerprint: str, source: str) -> int | None:
+    supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice.get("supplier_vat_country", "") + invoice.get("supplier_vat_number", "")).upper())
+    if len(supplier_vat) < 6 or not invoice.get("supplier_name") or not mapping:
+        return None
+    allowed = set(INVOICE_FIELDS) | {f"line_{field}" for field in ("sku", "description", "quantity", "unit", "hs_code", "origin_country", "invoice_value", "unit_net_mass")}
+    clean = []
+    for region in mapping[:40]:
+        if region.get("field") not in allowed:
+            continue
+        values = {key: max(0.0, min(1.0, float(region.get(key, 0)))) for key in ("x", "y", "width", "height")}
+        if values["width"] >= .005 and values["height"] >= .005:
+            clean.append({"field": region["field"], "page": max(1, int(region.get("page", 1))), **values})
+    if not clean:
+        return None
+    _remember_supplier(connection, invoice)
+    current = connection.execute("SELECT COALESCE(MAX(version),0) FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat)).fetchone()[0]
+    version = current + 1
+    connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat))
+    connection.execute("INSERT INTO supplier_template_versions(organisation_id,supplier_vat,version,layout_fingerprint,layout_mapping,source_invoice_id,source,active,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                       (ORG_ID, supplier_vat, version, fingerprint, json.dumps(clean), invoice.get("id"), source, 1, utc_now()))
+    connection.execute("UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=?,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
+                       (json.dumps(clean), fingerprint, version, utc_now(), ORG_ID, supplier_vat))
+    return version
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return TEMPLATE_PATH.read_text(encoding="utf-8").replace("{{APP_TITLE}}", APP_TITLE)
@@ -307,6 +333,14 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             destination.unlink(missing_ok=True)
             results.append({"filename": filename, "error": f"Could not read PDF: {exc}"})
             continue
+        verified_layout = []
+        for region in draft.get("suggested_layout", []):
+            try:
+                if _mapping_region_text({"storage_name": storage_name}, region):
+                    verified_layout.append(region)
+            except Exception:
+                continue
+        draft["suggested_layout"] = verified_layout
         now = utc_now()
         with transaction() as connection:
             document_id = connection.execute(
@@ -339,9 +373,17 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
                     pending_links.append((line_id, line["linked_position"]))
             for line_id, linked_position in pending_links:
                 connection.execute("UPDATE invoice_lines SET linked_line_id=? WHERE id=?", (positions_to_ids.get(linked_position), line_id))
+            draft["id"] = invoice_id
+            template_version = _store_supplier_template(connection, draft, draft.get("suggested_layout", []), layout_fingerprint(destination), "api-ai")
             _suggest_from_catalogue(connection, invoice_id)
-            _record_event(connection, invoice_id, "invoice_uploaded", {"filename": filename, "adapter": draft["adapter"]})
-        results.append({"filename": filename, "invoice_id": invoice_id, "duplicate": False, "adapter": draft["adapter"]})
+            meta = draft.get("ai_meta", {})
+            if meta:
+                connection.execute("INSERT INTO extraction_runs(organisation_id,invoice_id,method,status,message,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
+                                   (ORG_ID, invoice_id, "api-ai", "completed" if draft.get("lines") else "failed",
+                                    json.dumps({"request_id": meta.get("request_id", ""), "response_id": meta.get("response_id", ""), "error_code": meta.get("error_code", ""), "error": meta.get("error", ""), "usage": meta.get("usage", {})}),
+                                    meta.get("duration_ms", 0), now))
+            _record_event(connection, invoice_id, "invoice_uploaded", {"filename": filename, "adapter": draft["adapter"], "template_version": template_version})
+        results.append({"filename": filename, "invoice_id": invoice_id, "duplicate": False, "adapter": draft["adapter"], "template_version": template_version})
     return {"results": results}
 
 
@@ -447,11 +489,32 @@ async def save_supplier_mapping(invoice_id: int, request: Request):
         raise HTTPException(422, "These boxes contain no readable PDF text: " + ", ".join(unreadable) + ". Redraw them around the printed value.")
     fingerprint = layout_fingerprint(UPLOAD_DIR / document["storage_name"])
     with transaction() as connection:
-        _remember_supplier(connection, invoice)
-        connection.execute("UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=layout_version+1,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
-                           (json.dumps(clean), fingerprint, utc_now(), ORG_ID, supplier_vat))
-        _record_event(connection, invoice_id, "supplier_mapping_saved", {"regions": len(clean)})
-    return {"saved": True, "regions": clean, "fingerprint": fingerprint}
+        version = _store_supplier_template(connection, invoice, clean, fingerprint, "manual")
+        _record_event(connection, invoice_id, "supplier_mapping_saved", {"regions": len(clean), "version": version})
+    return {"saved": True, "regions": clean, "fingerprint": fingerprint, "version": version}
+
+
+@app.get("/api/invoices/{invoice_id}/supplier-templates")
+def supplier_template_history(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
+    return rows("SELECT id,version,layout_fingerprint,source,active,created_at FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=? ORDER BY version DESC", (ORG_ID, supplier_vat))
+
+
+@app.post("/api/invoices/{invoice_id}/supplier-templates/{template_id}/activate")
+def activate_supplier_template(invoice_id: int, template_id: int):
+    invoice = _invoice(invoice_id)
+    supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
+    template = row("SELECT * FROM supplier_template_versions WHERE id=? AND organisation_id=? AND supplier_vat=?", (template_id, ORG_ID, supplier_vat))
+    if not template:
+        raise HTTPException(404, "Supplier template version not found.")
+    with transaction() as connection:
+        connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat))
+        connection.execute("UPDATE supplier_template_versions SET active=1 WHERE id=?", (template_id,))
+        connection.execute("UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=?,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
+                           (template["layout_mapping"], template["layout_fingerprint"], template["version"], utc_now(), ORG_ID, supplier_vat))
+        _record_event(connection, invoice_id, "supplier_template_rollback", {"version": template["version"]})
+    return {"activated": True, "version": template["version"]}
 
 
 @app.post("/api/invoices/{invoice_id}/extract-again")
@@ -503,10 +566,13 @@ def extract_again(invoice_id: int, use_ai: bool = False):
         assignments = ", ".join(f"{field}=?" for field in updates)
         connection.execute(f"UPDATE invoices SET {assignments},status='needs_review',revision=revision+1,updated_at=? WHERE id=?", (*updates.values(), now, invoice_id))
         connection.execute("UPDATE documents SET extracted_text=?,extraction_method=? WHERE id=?", (extracted_text, draft["adapter"], document["id"]))
+        template_invoice = {**invoice, **updates, "id": invoice_id}
+        template_version = _store_supplier_template(connection, template_invoice, draft.get("suggested_layout", []), layout_fingerprint(UPLOAD_DIR / document["storage_name"]), "api-ai")
         _suggest_from_catalogue(connection, invoice_id)
-        _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"]})
+        _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"], "template_version": template_version})
+        meta = draft.get("ai_meta", {})
         connection.execute("INSERT INTO extraction_runs(organisation_id,invoice_id,method,status,message,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
-                           (ORG_ID, invoice_id, draft["adapter"], "completed", draft["notes"][-1000:], round((time.monotonic()-started)*1000), now))
+                           (ORG_ID, invoice_id, draft["adapter"], "completed", json.dumps({"notes": draft["notes"][-700:], "request_id": meta.get("request_id", ""), "usage": meta.get("usage", {})}), round((time.monotonic()-started)*1000), now))
     return _payload(invoice_id)
 
 
@@ -670,7 +736,7 @@ def cn_suggestions(line_id: int):
             item = details.get(str(suggestion.get("code", "")))
             if item:
                 ranked.append({**item, "confidence": max(0, min(100, int(suggestion.get("confidence", 0)))),
-                               "reason": str(suggestion.get("reason", "")), "source": "Local AI + " + item["source"]})
+                               "reason": str(suggestion.get("reason", "")), "source": "API AI + " + item["source"]})
         if ranked:
             candidates = ranked
     return {"query": product_text, "suggestions": candidates[:5], "year": 2026}

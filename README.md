@@ -3,7 +3,7 @@
 ## Supplier learning and CN checks
 
 - On an invoice, use **Remember supplier** after checking the shipment defaults. Approval also saves them automatically. Future PDFs are matched by supplier VAT/name and reuse flow, currency, consignment country, transport mode, Incoterm and transaction nature.
-- Common Code/Description/Quantity/Price/Amount tables use the fast local reader. If it cannot produce goods rows, the local Ollama reader remains the automatic fallback.
+- Confirmed supplier layouts use the fast local reader and consume no API credits. Uploading never calls an external AI. For an unknown or changed layout, the user can explicitly click **Learn layout with AI**, approve sending that PDF to OpenAI, and save a new versioned supplier template.
 - CN codes are checked against the 2026 EU Combined Nomenclature. The required supplementary unit is filled automatically; piece/pair quantities are copied from the goods quantity and all other required quantities remain visible for manual entry.
 - The bundled reference comes from the Spanish Tax Agency's EU CN 2026 workbook: https://sede.agenciatributaria.gob.es/static_files/Sede/Tema/Aduanas/Comercio_exterior/Nomenclaturas/2026/CN2026_Structure.xlsx
 
@@ -15,7 +15,7 @@ The app intentionally stops before government submission. It prepares and valida
 
 - Multiple PDF upload with file-signature, size and exact-duplicate checks
 - Native PDF text extraction and safe manual fallback
-- Automatic local OCR and Ollama extraction for unfamiliar supplier layouts
+- Automatic local PDF/OCR extraction plus OpenAI PDF understanding for unfamiliar supplier layouts
 - Tested layout adapters for the supplied Stricker and midocean examples
 - Side-by-side PDF and editable invoice/line review
 - Blocking issue list, row filters, tooltips and in-app guide
@@ -68,11 +68,11 @@ docker compose up -d --build
 
 Open `http://SERVER-IP:8088`. The Basic Authentication username is `intrastat`; the password is `INTRASTAT_APP_PASSWORD`.
 
-The Compose stack also starts Ollama and downloads the configured local model. The first download can take several minutes. The `intraready-ai-setup` container exits after the model is installed; that is expected. Unknown invoices can be retried with **Extract again** if they were uploaded before the model became ready.
+Create an API key at https://platform.openai.com/api-keys and set `INTRASTAT_OPENAI_API_KEY` in `.env` or in the Portainer stack environment. The default `gpt-5.6-terra` model can be changed with `INTRASTAT_OPENAI_MODEL`. Use **Check API AI** in invoice review to verify access. The key is read only from the container environment and is never stored in SQLite or shown in the browser.
 
 For Portainer, either deploy `compose.yaml` from a Git repository (so its build context is available), or build the image on the server first with `docker build -t intraready:0.1.0 .` and create a stack from the same Compose definition after removing its `build:` block. The named `intraready_data` volume contains the database, source PDFs, schema and exports.
 
-For the existing Portainer web-editor installation, use `compose.portainer.yaml`. It keeps the locally built `intraready:0.1.0` image and adds the local Ollama service without changing the existing data-volume name.
+For Portainer, deploy `compose.portainer.yaml` from the Git repository so the Docker build context is available. The volume has the stable name `intraready_intraready_data`; set `INTRASTAT_DATA_VOLUME` only if an older installation uses another existing volume name.
 
 Before exposing the service outside the LAN, put it behind an authenticated HTTPS reverse proxy or VPN. Basic Authentication is a practical private-server gate; a public SaaS needs proper accounts, password recovery, per-tenant authorization, rate limits, object storage, PostgreSQL, background jobs, monitoring and a privacy/retention policy.
 

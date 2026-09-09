@@ -28,7 +28,7 @@
           <button class="nav-item" data-nav="guide"><span class="nav-icon">?</span>How it works</button>
           <button class="nav-item" data-nav="settings"><span class="nav-icon">⚙</span>Organisation</button>
         </nav>
-        <div class="local-note"><span class="status-dot"></span><span>Private workspace<small>Files stay on this server</small></span></div>
+        <div class="local-note"><span class="status-dot"></span><span>Review workspace<small>Unknown layouts may use API AI</small></span></div>
       </div>
     </aside>
 
@@ -81,7 +81,7 @@
           <div id="uploadResults" class="upload-results"></div>
           <article class="info-card">
             <span class="info-icon">i</span>
-            <div><strong>Invoices never approve themselves</strong><p>Extracted values are suggestions. Each goods row stays unreviewed until you confirm it, and missing information remains visible.</p></div>
+            <div><strong>Uploading never spends AI credits</strong><p>Invoices stay local until you explicitly click “Learn layout with AI” and approve sending that PDF to OpenAI. Saved layouts are processed locally without API credits. Every extracted row stays unreviewed until you confirm it.</p></div>
           </article>
         </section>
 
@@ -152,6 +152,8 @@
             <article><span>02</span><h3>Confirm the facts</h3><p>Enter the actual arrival date and country of consignment. Review each goods row and resolve charges before approval.</p><button class="text-button" data-nav="invoices">Open review queue →</button></article>
             <article><span>03</span><h3>Remember products</h3><p>After checking a recurring SKU, save its commodity code and unit net weight. Future invoices can reuse those facts.</p><button class="text-button" data-nav="catalogue">View product memory →</button></article>
             <article><span>04</span><h3>Export, then upload</h3><p>Preview rounded declaration values. Download the XSD-validated XML, upload it yourself, and record the receipt reference.</p><button class="text-button" data-nav="declarations">Build a declaration →</button></article>
+            <article><span>AI</span><h3>Connect invoice AI</h3><p>Create a secret key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI API keys ↗</a>, add it to the Portainer stack as <code>INTRASTAT_OPENAI_API_KEY</code>, and redeploy. Use “Check API AI” on an invoice. Uploading never calls AI. Click “Learn layout with AI” only for an unknown or changed layout; the confirmation explains that the PDF will be sent to OpenAI.</p><p>The default model is <code>gpt-5.6-terra</code>. Matching saved layouts are read locally without API credits. Never paste the secret key into an invoice or notes field.</p></article>
+            <article><span>↶</span><h3>Template history</h3><p>Every AI or manual supplier map creates a version. Open “Map supplier” to inspect versions and restore an earlier one if a changed layout produces worse results.</p></article>
           </div>
           <article class="panel reference-panel">
             <h3>Field cheat sheet</h3>
@@ -205,7 +207,7 @@
 
   <dialog id="cnSuggestionDialog" class="modal">
     <div class="modal-head"><div><p class="eyebrow">CN 2026</p><h2>Suggested commodity codes</h2></div><button class="icon-button" data-close-cn aria-label="Close">×</button></div>
-    <p>Local AI ranks official CN descriptions. Confirm the material and purpose before choosing.</p>
+    <p>API AI ranks official CN descriptions. Confirm the material and purpose before choosing.</p>
     <div id="cnSuggestionResults" class="issue-list"></div>
     <div class="form-actions"><button class="button quiet" data-close-cn>Cancel</button></div>
   </dialog>
@@ -224,6 +226,7 @@
     <div id="mappingCanvasWrap" class="mapping-canvas"><canvas id="mappingCanvas" aria-label="Invoice page mapping canvas"></canvas></div>
     <div id="mappingPreview" class="mapping-preview">Draw a box to preview the extracted text.</div>
     <div id="mappingRegionList" class="mapping-region-list"></div>
+    <div id="mappingHistory" class="mapping-history"></div>
     <div class="form-actions"><button class="button quiet" data-close-mapping>Cancel</button><button id="previewMappingButton" class="button secondary">Preview extracted rows</button><button id="saveMappingButton" class="button primary">Save supplier map</button></div>
   </dialog>
 

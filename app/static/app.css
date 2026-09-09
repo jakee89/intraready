@@ -254,6 +254,8 @@ select:focus, input:focus, textarea:focus { border-color: var(--teal); }
 #mappingCanvas { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: none; background: white; }
 .mapping-preview { width: min(100%, 1050px); box-sizing: border-box; margin: 10px auto 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 10px; background: #f7faf8; color: var(--muted); }
 .mapping-region-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.mapping-history { width: min(100%, 1050px); margin: 14px auto 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.mapping-history-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 7px 0; }
 .toast-region { position: fixed; z-index: 100; right: 22px; bottom: 22px; display: grid; gap: 9px; }
 .toast { width: min(360px, calc(100vw - 44px)); padding: 13px 15px; border-radius: 12px; color: white; background: #213b36; box-shadow: var(--shadow); animation: toastIn .2s ease-out; }
 .toast.error { background: #773c37; }

@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS supplier_template_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organisation_id INTEGER NOT NULL REFERENCES organisations(id),
+    supplier_vat TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    layout_fingerprint TEXT NOT NULL,
+    layout_mapping TEXT NOT NULL,
+    source_invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE(organisation_id, supplier_vat, version)
+);
+
 CREATE TABLE IF NOT EXISTS review_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organisation_id INTEGER NOT NULL REFERENCES organisations(id),
@@ -182,6 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(organisation_id, stat
 CREATE INDEX IF NOT EXISTS idx_lines_invoice ON invoice_lines(invoice_id, position);
 CREATE INDEX IF NOT EXISTS idx_products_lookup ON product_facts(organisation_id, supplier_vat, sku);
 CREATE INDEX IF NOT EXISTS idx_supplier_profiles ON supplier_profiles(organisation_id, supplier_vat);
+CREATE INDEX IF NOT EXISTS idx_supplier_templates ON supplier_template_versions(organisation_id, supplier_vat, version);
 """
 
 
