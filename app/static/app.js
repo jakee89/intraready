@@ -4,6 +4,7 @@ const state = {
   catalogue: [],
   exports: [],
   declaration: null,
+  pendingReviews: new Map(),
   page: "dashboard",
 };
 
@@ -144,6 +145,7 @@ function renderInvoiceTable() {
 }
 
 async function openInvoice(invoiceId) {
+  state.pendingReviews.clear();
   navigate("review");
   history.replaceState(null, "", `#review/${invoiceId}`);
   $("#reviewContent").innerHTML = `<div class="panel loading"></div>`;
@@ -204,13 +206,13 @@ function renderReview() {
           ${issues.length ? `<div class="issue-list">${issues.slice(0, 8).map(issue => `<div class="issue"><span>•</span><span>${escapeHtml(issue.message)}</span>${issue.line_id ? `<button data-focus-line="${issue.line_id}">Show row</button>` : ""}</div>`).join("")}${issues.length > 8 ? `<div class="issue"><span>+</span><span>${issues.length - 8} more checks are highlighted in the table.</span></div>` : ""}</div>` : ""}
         </article>
         ${invoice.preparation?.rows?.length ? `<article class="panel review-section"><div class="section-title"><div><h3>Prepared Intrastat rows</h3><p>These are the final values that will be exported after approval.</p></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Product</th><th>Included charges</th><th>Invoice €</th><th>Stat €</th><th>Net kg</th></tr></thead><tbody>${invoice.preparation.rows.map(row => `<tr><td><strong>${escapeHtml(row.sku || row.description)}</strong><span class="subline">${escapeHtml(row.description)}</span></td><td>${escapeHtml(row.included.join(", ") || "None")}</td><td>${escapeHtml(row.invoice_value)}</td><td>${escapeHtml(row.statistical_value)}</td><td>${escapeHtml(row.net_mass || "Missing")}</td></tr>`).join("")}</tbody></table></div></article>` : ""}
-        <article class="panel review-section"><div class="section-title"><div><h3>Goods and charges</h3><p>Internal reference details remain here and stay out of XML.</p></div><div class="line-toolbar"><select id="lineFilter"><option value="all">All rows</option><option value="issues">Rows with issues</option><option value="unreviewed">Unreviewed</option><option value="goods">Goods only</option><option value="charges">Charges only</option></select><button id="combineRowsButton" class="button quiet" title="Combine rows only when their Intrastat classification fields match">Combine equivalent</button><button id="addLineSmallButton" class="button secondary">Add</button></div></div>
+      </div>
+        <article class="panel review-section full-width-lines"><div class="section-title"><div><h3>Goods and charges</h3><p>Internal reference details remain here and stay out of XML.</p></div><div class="line-toolbar"><select id="lineFilter"><option value="all">All rows</option><option value="issues">Rows with issues</option><option value="unreviewed">Unreviewed</option><option value="goods">Goods only</option><option value="charges">Charges only</option></select><button id="saveReviewedButton" class="button secondary" ${state.pendingReviews.size ? "" : "disabled"}>Save reviewed rows${state.pendingReviews.size ? ` (${state.pendingReviews.size})` : ""}</button><button id="combineRowsButton" class="button quiet" title="Combine rows only when their Intrastat classification fields match">Combine equivalent</button><button id="addLineSmallButton" class="button secondary">Add</button></div></div>
           <div class="charge-guide"><strong>Charge treatment:</strong> choose “Add to invoice value” for costs that form part of the goods purchase, “Statistical only” for relevant transport/insurance, or exclude a service with a note. Confirm the correct treatment for your case.</div>
           <div class="data-table-wrap"><table class="data-table line-table"><thead><tr><th>Type</th><th>SKU / description</th><th>Qty</th><th>CN code</th><th>Origin</th><th>Invoice €</th><th>Stat €</th><th>Unit kg</th><th>Total kg</th><th>Reviewed</th><th>Actions</th></tr></thead><tbody id="lineTableBody">
           ${invoice.lines.map(line => lineRow(line, invoice.lines, issueLines)).join("") || `<tr><td class="empty-row" colspan="11">No rows were extracted. Add the first goods row manually.</td></tr>`}
           </tbody></table></div>
         </article>
-      </div>
     </div>`;
 }
 
@@ -228,7 +230,7 @@ function lineRow(line, allLines, issueLines) {
     <td><input data-line-id="${line.id}" data-line-field="statistical_value" value="${escapeHtml(line.statistical_value)}" inputmode="decimal" ${line.line_kind!=="goods"?"disabled":""}></td>
     <td><input data-line-id="${line.id}" data-line-field="unit_net_mass" value="${escapeHtml(line.unit_net_mass)}" inputmode="decimal" title="Net weight of one unit; remembered by supplier and SKU" ${line.line_kind!=="goods"?"disabled":""}></td>
     <td><input data-line-id="${line.id}" data-line-field="net_mass" value="${escapeHtml(line.net_mass)}" inputmode="decimal" title="Total row weight used for Intrastat${line.net_mass_overridden ? " · manually overridden" : " · quantity × unit weight"}" ${line.line_kind!=="goods"?"disabled":""}></td>
-    <td><input type="checkbox" data-line-id="${line.id}" data-line-field="reviewed" ${line.reviewed?"checked":""} aria-label="Mark row reviewed"></td>
+    <td><input type="checkbox" data-review-line="${line.id}" ${state.pendingReviews.has(line.id) ? (state.pendingReviews.get(line.id) ? "checked" : "") : (line.reviewed ? "checked" : "")} aria-label="Mark row reviewed"></td>
     <td><div class="row-actions"><button class="mini-button" data-edit-line="${line.id}" title="Edit all row fields">Details</button>${line.line_kind==="goods" ? `<button class="mini-button" data-remember-line="${line.id}" title="Save verified product facts for this supplier and SKU">Remember</button>` : ""}<button class="mini-button delete" data-delete-line="${line.id}">Delete</button></div><small class="subline">Page ${line.source_page || "—"}</small></td>
   </tr>`;
 }
@@ -416,6 +418,15 @@ document.addEventListener("click", async event => {
     catch (error) { toast(error.message, "error"); }
     return;
   }
+  if (event.target.closest("#saveReviewedButton")) {
+    const reviewed = [...state.pendingReviews].map(([id, value]) => ({ id, reviewed: value }));
+    if (!reviewed.length) return;
+    try {
+      state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/review-lines`, { method: "PATCH", body: JSON.stringify({ reviewed }) });
+      state.pendingReviews.clear(); await refreshBootstrap(); renderReview(); toast("Reviewed rows saved");
+    } catch (error) { toast(error.message, "error"); }
+    return;
+  }
   const editLine = event.target.closest("[data-edit-line]");
   if (editLine) { openLineDialog(editLine.dataset.editLine); return; }
   if (event.target.closest("#addCatalogueButton")) { openCatalogueDialog(); return; }
@@ -463,6 +474,14 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.matches("[data-review-line]")) {
+    const id = Number(event.target.dataset.reviewLine);
+    state.pendingReviews.set(id, event.target.checked);
+    const button = $("#saveReviewedButton");
+    button.disabled = false;
+    button.textContent = `Save reviewed rows (${state.pendingReviews.size})`;
+    return;
+  }
   if (event.target.matches("[data-invoice-field]")) updateInvoiceField(event.target);
   if (event.target.matches("[data-line-field]")) updateLineField(event.target);
   if (event.target.matches("#invoiceFilter")) renderInvoiceTable();

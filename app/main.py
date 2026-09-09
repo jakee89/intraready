@@ -56,7 +56,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.3.3", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.3.4", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -506,6 +506,24 @@ async def update_line(line_id: int, request: Request):
         connection.execute(f"UPDATE invoice_lines SET {assignments},updated_at=? WHERE id=?", (*updates.values(), utc_now(), line_id))
         _invalidate(connection, found["invoice_id"], "line_updated", {"line_id": line_id, "fields": list(updates)})
     return _payload(found["invoice_id"])
+
+
+@app.patch("/api/invoices/{invoice_id}/review-lines")
+async def review_lines(invoice_id: int, request: Request):
+    invoice = _invoice(invoice_id)
+    if invoice["status"] == "submitted":
+        raise HTTPException(409, "Submitted invoices are locked.")
+    changes = (await request.json()).get("reviewed", [])
+    with transaction() as connection:
+        valid_ids = {item[0] for item in connection.execute("SELECT id FROM invoice_lines WHERE invoice_id=?", (invoice_id,))}
+        for change in changes:
+            line_id = int(change.get("id", 0))
+            if line_id not in valid_ids:
+                raise HTTPException(422, "A reviewed row does not belong to this invoice.")
+            connection.execute("UPDATE invoice_lines SET reviewed=?,updated_at=? WHERE id=?", (1 if change.get("reviewed") else 0, utc_now(), line_id))
+        if changes:
+            _invalidate(connection, invoice_id, "lines_reviewed", {"count": len(changes)})
+    return _payload(invoice_id)
 
 
 @app.delete("/api/lines/{line_id}")
