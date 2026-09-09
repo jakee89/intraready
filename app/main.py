@@ -56,7 +56,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.3.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.3.3", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -107,7 +107,34 @@ def _payload(invoice_id: int) -> dict:
     result["lines"] = lines_list
     result["document"] = document
     result["readiness"] = readiness(invoice, lines_list, _profile())
+    result["preparation"] = _preparation_summary(lines_list)
     return result
+
+
+def _preparation_summary(lines_list: list[dict]) -> dict:
+    goods = [line for line in lines_list if line.get("line_kind") == "goods"]
+    output = []
+    for line in goods:
+        invoice_value = Decimal(str(line.get("invoice_value") or "0"))
+        statistical_value = Decimal(str(line.get("statistical_value") or line.get("invoice_value") or "0"))
+        included = []
+        for charge in lines_list:
+            if charge.get("linked_line_id") != line.get("id"):
+                continue
+            amount = Decimal(str(charge.get("invoice_value") or "0"))
+            if charge.get("line_kind") == "charge_invoice":
+                invoice_value += amount
+                statistical_value += amount
+                included.append(charge.get("description") or "Charge")
+            elif charge.get("line_kind") == "charge_stat":
+                statistical_value += amount
+                included.append(charge.get("description") or "Freight")
+        output.append({
+            "line_id": line.get("id"), "sku": line.get("sku"), "description": line.get("description"),
+            "invoice_value": format(invoice_value, "f"), "statistical_value": format(statistical_value, "f"),
+            "net_mass": line.get("net_mass", ""), "included": included,
+        })
+    return {"rows": output, "prepared": bool(output) and all(not line.get("line_kind") == "charge" for line in lines_list)}
 
 
 def _clean_value(field: str, value):
@@ -570,6 +597,45 @@ def combine_equivalent_lines(invoice_id: int):
     result = _payload(invoice_id)
     result["combined_groups"] = combined_groups
     return result
+
+
+@app.post("/api/invoices/{invoice_id}/prepare")
+def prepare_invoice(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    if invoice["status"] == "submitted":
+        raise HTTPException(409, "Submitted invoices are locked.")
+    invoice_lines = _lines(invoice_id)
+    goods = [line for line in invoice_lines if line["line_kind"] == "goods" and line.get("hs_code")]
+    if not goods:
+        raise HTTPException(422, "No classified goods row is available yet. Use the AI reader or add the CN code first.")
+    with transaction() as connection:
+        for line in invoice_lines:
+            description = (line.get("description") or "").lower()
+            kind = line["line_kind"]
+            if re.search(r"freight|transport|shipping|carriage|delivery cost", description):
+                kind = "charge_stat"
+            elif re.search(r"print|engraving|logo|personalisation|decoration|setup|set-up", description) and not line.get("hs_code"):
+                kind = "charge_invoice"
+            if kind.startswith("charge"):
+                preceding = [item for item in goods if item["position"] < line["position"]]
+                target = preceding[-1] if preceding else (goods[0] if len(goods) == 1 else None)
+                if target:
+                    connection.execute(
+                        "UPDATE invoice_lines SET line_kind=?,linked_line_id=?,updated_at=? WHERE id=?",
+                        (kind, target["id"], utc_now(), line["id"]),
+                    )
+            elif kind == "goods":
+                requirement = cn_requirement(line.get("hs_code", ""))
+                updates = {}
+                if requirement["supp_unit"]:
+                    updates["supp_unit"] = requirement["supp_unit"]
+                if requirement["supp_unit"] in {"p/st", "pa"} and line.get("quantity"):
+                    updates["supp_qty"] = line["quantity"]
+                if updates:
+                    assignments = ",".join(f"{field}=?" for field in updates)
+                    connection.execute(f"UPDATE invoice_lines SET {assignments},updated_at=? WHERE id=?", (*updates.values(), utc_now(), line["id"]))
+        _invalidate(connection, invoice_id, "invoice_prepared", {"method": "ai-assisted rules"})
+    return _payload(invoice_id)
 
 
 @app.post("/api/invoices/{invoice_id}/approve")
