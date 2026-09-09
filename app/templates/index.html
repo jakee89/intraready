@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Prepare, review and export Intrastat declarations from supplier invoices.">
+  <title>{{APP_TITLE}}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Main navigation">
+      <a class="brand" href="#dashboard" data-nav="dashboard" aria-label="IntraReady home">
+        <span class="brand-mark">IR</span>
+        <span><strong>IntraReady</strong><small>Declaration workspace</small></span>
+      </a>
+      <nav>
+        <button class="nav-item active" data-nav="dashboard"><span class="nav-icon">⌂</span>Overview</button>
+        <button class="nav-item" data-nav="upload"><span class="nav-icon">↑</span>Upload invoices</button>
+        <button class="nav-item" data-nav="invoices"><span class="nav-icon">▤</span>Invoices <span id="reviewBadge" class="nav-badge hidden">0</span></button>
+        <button class="nav-item" data-nav="catalogue"><span class="nav-icon">◇</span>Product memory</button>
+        <button class="nav-item" data-nav="declarations"><span class="nav-icon">↗</span>Declarations</button>
+      </nav>
+      <div class="sidebar-lower">
+        <nav>
+          <button class="nav-item" data-nav="guide"><span class="nav-icon">?</span>How it works</button>
+          <button class="nav-item" data-nav="settings"><span class="nav-icon">⚙</span>Organisation</button>
+        </nav>
+        <div class="local-note"><span class="status-dot"></span><span>Private workspace<small>Files stay on this server</small></span></div>
+      </div>
+    </aside>
+
+    <div class="content-shell">
+      <header class="topbar">
+        <button id="menuButton" class="icon-button menu-button" aria-label="Open menu">☰</button>
+        <div>
+          <p id="eyebrow" class="eyebrow">WORKSPACE</p>
+          <h1 id="pageTitle">Overview</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="button quiet" data-nav="guide">Quick guide</button>
+          <button class="button primary" data-nav="upload">Upload invoices</button>
+        </div>
+      </header>
+
+      <main id="mainContent">
+        <section class="page active" data-page="dashboard">
+          <div id="setupBanner" class="setup-banner"></div>
+          <div class="metric-grid" id="metrics"></div>
+          <div class="dashboard-grid">
+            <article class="panel">
+              <div class="panel-head"><div><p class="eyebrow">RECENT ACTIVITY</p><h2>Invoices</h2></div><button class="text-button" data-nav="invoices">View all →</button></div>
+              <div id="recentInvoices"></div>
+            </article>
+            <article class="panel next-step-panel">
+              <p class="eyebrow">YOUR WORKFLOW</p>
+              <h2>From invoice to upload</h2>
+              <div class="step-list">
+                <button data-nav="upload"><span>1</span><div><strong>Add invoices</strong><small>PDFs are checked for exact duplicates</small></div></button>
+                <button data-nav="invoices"><span>2</span><div><strong>Review highlighted fields</strong><small>Confirm dates, goods, values and weights</small></div></button>
+                <button data-nav="declarations"><span>3</span><div><strong>Export and upload</strong><small>Validate the file, then upload it to the portal</small></div></button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" data-page="upload">
+          <div class="page-intro">
+            <div><p class="eyebrow">STEP 1 OF 3</p><h2>Add this month's invoices</h2><p>Upload invoices from any supplier. We extract what we can and leave uncertain fields for you to check.</p></div>
+            <button id="manualInvoiceButton" class="button secondary">Create blank invoice</button>
+          </div>
+          <article class="upload-zone" id="uploadZone">
+            <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+            <div class="upload-orb">↑</div>
+            <h3>Drop PDF invoices here</h3>
+            <p>or <button id="browseButton" class="inline-button">choose files</button> from your computer</p>
+            <small>PDF only · Up to 20 MB per file · Multiple suppliers are supported</small>
+          </article>
+          <div id="uploadResults" class="upload-results"></div>
+          <article class="info-card">
+            <span class="info-icon">i</span>
+            <div><strong>Invoices never approve themselves</strong><p>Extracted values are suggestions. Each goods row stays unreviewed until you confirm it, and missing information remains visible.</p></div>
+          </article>
+        </section>
+
+        <section class="page" data-page="invoices">
+          <div class="page-intro compact">
+            <div><p class="eyebrow">REVIEW QUEUE</p><h2>Invoices</h2><p>Keep invoice references here for checking. They are never included in the official export.</p></div>
+            <div class="toolbar"><select id="invoiceFilter" aria-label="Filter invoices"><option value="all">All statuses</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="submitted">Submitted</option></select><button class="button primary" data-nav="upload">Add invoices</button></div>
+          </div>
+          <div class="panel table-panel"><div id="invoiceTable"></div></div>
+        </section>
+
+        <section class="page review-page" data-page="review">
+          <div id="reviewContent" class="empty-state"><h2>Select an invoice</h2><p>Open an invoice from the review queue.</p></div>
+        </section>
+
+        <section class="page" data-page="catalogue">
+          <div class="page-intro compact"><div><p class="eyebrow">PRODUCT MEMORY</p><h2>Verified product facts</h2><p>Reuse trusted commodity codes and unit weights for recurring products.</p></div><button id="addCatalogueButton" class="button primary">Add product</button></div>
+          <article class="info-card slim"><span class="info-icon">i</span><div><strong>Suggestions remain visible</strong><p>A saved fact fills future gaps, but it does not silently overwrite new invoice evidence. Origin may change between batches.</p></div></article>
+          <div class="panel table-panel"><div id="catalogueTable"></div></div>
+        </section>
+
+        <section class="page" data-page="declarations">
+          <div class="page-intro compact"><div><p class="eyebrow">STEP 3 OF 3</p><h2>Declaration preview</h2><p>Only approved goods from the selected arrival month are included.</p></div></div>
+          <div class="declaration-controls panel">
+            <label>Flow <span class="tip" data-tip="Arrivals and dispatches must be exported separately.">?</span><select id="declarationFlow"><option value="A">A · Arrivals</option><option value="D">D · Dispatches</option></select></label>
+            <label>Movement period <span class="tip" data-tip="Use the month the goods physically arrived or left, which may differ from the invoice month.">?</span><input id="declarationPeriod" type="month"></label>
+            <button id="previewButton" class="button primary">Build preview</button>
+            <span id="schemaPill" class="schema-pill"></span>
+          </div>
+          <div id="declarationContent"></div>
+          <div id="exportHistory"></div>
+        </section>
+
+        <section class="page" data-page="settings">
+          <div class="page-intro"><div><p class="eyebrow">ORGANISATION</p><h2>Declaration identity</h2><p>These details are reused in each declaration. Saving changes reopens approved invoices for checking.</p></div></div>
+          <form id="profileForm" class="panel form-panel">
+            <div class="section-heading"><span>01</span><div><h3>Trader details</h3><p>Required by the declaration header.</p></div></div>
+            <div class="form-grid">
+              <label>Trader VAT number <span class="tip" data-tip="Your Maltese VAT number. The MT prefix is removed in the XML field.">?</span><input name="trader_vat" placeholder="MT12345678" autocomplete="organization"></label>
+              <label>Contact email <span class="tip" data-tip="Email address recorded with the declaration.">?</span><input name="email" type="email" placeholder="accounts@example.com"></label>
+              <label>Signatory name <span class="tip" data-tip="Full name of the person responsible for the declaration.">?</span><input name="signatory" placeholder="Name Surname"></label>
+              <label>ID card <span class="tip" data-tip="Declarant ID card number, including its letter.">?</span><input name="id_card" placeholder="123456M"></label>
+              <label>Telephone<input name="telephone" placeholder="+356 2000 0000"></label>
+              <label>Locality<input name="locality" placeholder="HAMRUN"></label>
+              <label>Agent VAT <span class="optional">Optional</span><input name="agent_vat" placeholder="Only if declaring as an agent"></label>
+              <label>Trading licence <span class="optional">Optional</span><input name="trading_licence"></label>
+            </div>
+            <div class="section-heading"><span>02</span><div><h3>Useful defaults</h3><p>Defaults are suggestions on new manual invoices.</p></div></div>
+            <div class="form-grid three">
+              <label>Default flow<select name="default_flow"><option value="A">A · Arrivals</option><option value="D">D · Dispatches</option></select></label>
+              <label>Default transport<select name="default_mot"><option value="1">1 · Sea</option><option value="4">4 · Air / courier</option><option value="5">5 · Post</option><option value="7">7 · Fixed installation</option><option value="9">9 · Own propulsion</option></select></label>
+              <label>Default transaction<select name="default_not"><option value="11">11 · Outright purchase/sale</option><option value="01">01 · E-commerce</option><option value="21">21 · Return of goods</option><option value="99">99 · Other</option></select></label>
+            </div>
+            <div class="form-actions"><span id="profileSaved" class="saved-note"></span><button class="button primary" type="submit">Save organisation</button></div>
+          </form>
+          <article class="panel schema-panel">
+            <div class="section-heading"><span>03</span><div><h3>Official XML schema</h3><p>A one-time setup used to generate and validate Malta NSO XML.</p></div></div>
+            <div id="schemaStatus"></div>
+            <form id="schemaForm" class="schema-upload"><input id="schemaInput" type="file" name="file" accept=".xsd,application/xml,text/xml" required><button class="button secondary" type="submit">Upload official XSD</button></form>
+            <p class="fine-print">Download “XML Schema File” from the NSO downloads page. The app rejects HTML block pages and does not export XML until the required fields map and the file validates against the schema.</p>
+          </article>
+        </section>
+
+        <section class="page" data-page="guide">
+          <div class="guide-hero"><p class="eyebrow">QUICK GUIDE</p><h2>A calm monthly routine</h2><p>The app prepares and checks your data. You remain in control of approval and portal submission.</p></div>
+          <div class="guide-grid">
+            <article><span>01</span><h3>Upload everything</h3><p>Add all supplier PDFs for the month. Exact file duplicates are caught automatically. Unknown layouts open as editable drafts.</p><button class="text-button" data-nav="upload">Go to upload →</button></article>
+            <article><span>02</span><h3>Confirm the facts</h3><p>Enter the actual arrival date and country of consignment. Review each goods row and resolve charges before approval.</p><button class="text-button" data-nav="invoices">Open review queue →</button></article>
+            <article><span>03</span><h3>Remember products</h3><p>After checking a recurring SKU, save its commodity code and unit net weight. Future invoices can reuse those facts.</p><button class="text-button" data-nav="catalogue">View product memory →</button></article>
+            <article><span>04</span><h3>Export, then upload</h3><p>Preview rounded declaration values. Download the XSD-validated XML, upload it yourself, and record the receipt reference.</p><button class="text-button" data-nav="declarations">Build a declaration →</button></article>
+          </div>
+          <article class="panel reference-panel">
+            <h3>Field cheat sheet</h3>
+            <div class="cheat-grid">
+              <div><strong>Arrival date</strong><p>The day goods reached Malta. This decides the reporting month.</p></div>
+              <div><strong>Country of consignment</strong><p>The EU country the shipment physically came from.</p></div>
+              <div><strong>Country of origin</strong><p>Where the goods were manufactured. It can differ from the supplier country.</p></div>
+              <div><strong>Net mass</strong><p>Weight of goods without packaging. Shipment gross weight is not a substitute.</p></div>
+              <div><strong>Invoice value</strong><p>Value of goods in EUR for the declaration, rounded only at export.</p></div>
+              <div><strong>Statistical value</strong><p>Goods plus relevant transport/insurance costs under the applicable rule.</p></div>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="lineDialog" class="modal">
+    <form id="lineForm" method="dialog">
+      <div class="modal-head"><div><p class="eyebrow">INVOICE ROW</p><h2>Add a row</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="form-grid">
+        <label>Row type<select name="line_kind"><option value="goods">Goods</option><option value="charge">Charge · treatment undecided</option><option value="excluded">Excluded / service</option></select></label>
+        <label>SKU<input name="sku"></label><label class="wide">Description<input name="description" required></label>
+        <label>Quantity<input name="quantity" inputmode="decimal"></label><label>Unit<input name="unit" placeholder="PCE"></label>
+        <label>Commodity code<input name="hs_code" inputmode="numeric" maxlength="8"></label><label>Origin country<input name="origin_country" maxlength="2" placeholder="CN"></label>
+        <label>Invoice value<input name="invoice_value" inputmode="decimal"></label><label>Statistical value<input name="statistical_value" inputmode="decimal"></label>
+        <label>Net mass kg<input name="net_mass" inputmode="decimal"></label><label>Source page<input name="source_page" type="number" min="1"></label>
+        <label>Supplementary quantity <span class="optional">When required by CN</span><input name="supp_qty" inputmode="decimal"></label><label>Supplementary unit<input name="supp_unit"></label>
+        <label>Special quantity <span class="optional">Selected appliance codes</span><input name="special_quantity" inputmode="decimal"></label><label>Collector type <span class="optional">CN 84191900</span><input name="collector_type"></label>
+        <label class="wide">Range <span class="optional">Selected appliance codes</span><input name="range_value"></label>
+        <label class="wide">Notes<textarea name="notes" rows="2"></textarea></label>
+      </div>
+      <div class="form-actions"><button class="button quiet" value="cancel">Cancel</button><button id="saveLineButton" class="button primary" type="submit" value="default">Add row</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="catalogueDialog" class="modal">
+    <form id="catalogueForm" method="dialog">
+      <div class="modal-head"><div><p class="eyebrow">PRODUCT MEMORY</p><h2>Add a verified product</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="form-grid">
+        <label>Supplier VAT<input name="supplier_vat" placeholder="PT501888640"></label><label>Supplier name<input name="supplier_name"></label>
+        <label>SKU<input name="sku" required></label><label>Commodity code<input name="hs_code" maxlength="8"></label>
+        <label class="wide">Description<input name="description"></label><label>Origin<input name="origin_country" maxlength="2"></label>
+        <label>Net kg per unit<input name="unit_net_mass" inputmode="decimal"></label><label>Supplementary unit<input name="supp_unit"></label>
+        <label class="wide">Evidence / note<input name="evidence" placeholder="Supplier specification, invoice reference…"></label>
+      </div>
+      <div class="form-actions"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" type="submit" value="default">Save product</button></div>
+    </form>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+</body>
+</html>
