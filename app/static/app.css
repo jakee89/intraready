@@ -252,7 +252,7 @@ select:focus, input:focus, textarea:focus { border-color: var(--teal); }
 .mapping-toolbar select { min-width: 220px; }
 .mapping-canvas { position: relative; width: min(100%, 900px); margin: auto; background: #e8ecea; user-select: none; }
 .mapping-canvas img { display: block; width: 100%; height: auto; pointer-events: none; }
-#mappingOverlay { position: absolute; z-index: 5; inset: 0; cursor: crosshair; touch-action: none; }
+#mappingOverlay { position: absolute; z-index: 20; display: block; inset: 0; cursor: crosshair; touch-action: none; }
 .mapping-box { position: absolute; border: 2px solid var(--teal); background: rgba(21,132,111,.16); pointer-events: none; }
 .mapping-box span { position: absolute; left: -2px; bottom: 100%; padding: 2px 5px; color: white; background: var(--teal); font-size: .65rem; white-space: nowrap; }
 .mapping-region-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }

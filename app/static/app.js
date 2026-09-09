@@ -613,13 +613,15 @@ function mappingPoint(event) {
   const box = mappingOverlay.getBoundingClientRect();
   return { x: Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)), y: Math.max(0, Math.min(1, (event.clientY - box.top) / box.height)) };
 }
-mappingOverlay.addEventListener("pointerdown", event => {
+mappingOverlay.addEventListener("mousedown", event => {
   event.preventDefault();
-  mappingOverlay.setPointerCapture(event.pointerId);
   state.mapping.start = mappingPoint(event);
+  state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
+    x: state.mapping.start.x, y: state.mapping.start.y, width: 0, height: 0 };
 });
-mappingOverlay.addEventListener("pointermove", event => {
+document.addEventListener("mousemove", event => {
   if (!state.mapping.start) return;
+  event.preventDefault();
   const point = mappingPoint(event), start = state.mapping.start;
   state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
     x: Math.min(start.x, point.x), y: Math.min(start.y, point.y),
@@ -630,8 +632,7 @@ function finishMappingDrag() {
   if (state.mapping.draft?.width > .005 && state.mapping.draft?.height > .005) state.mapping.regions.push(state.mapping.draft);
   state.mapping.start = null; state.mapping.draft = null; renderMapping();
 }
-mappingOverlay.addEventListener("pointerup", finishMappingDrag);
-mappingOverlay.addEventListener("pointercancel", finishMappingDrag);
+document.addEventListener("mouseup", () => { if (state.mapping.start) finishMappingDrag(); });
 $("#mappingImage").addEventListener("load", renderMappingBoxes);
 
 document.addEventListener("keydown", event => {
