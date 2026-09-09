@@ -321,7 +321,7 @@ def document_file(document_id: int):
 
 
 @app.post("/api/invoices/{invoice_id}/extract-again")
-def extract_again(invoice_id: int):
+def extract_again(invoice_id: int, use_ai: bool = False):
     invoice = _invoice(invoice_id)
     if invoice["status"] == "submitted":
         raise HTTPException(409, "Submitted invoices are locked.")
@@ -330,7 +330,7 @@ def extract_again(invoice_id: int):
     document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
     if not document:
         raise HTTPException(422, "This manual invoice has no PDF to extract.")
-    draft, extracted_text, _ = extract_invoice(UPLOAD_DIR / document["storage_name"], document["filename"], _supplier_profiles())
+    draft, extracted_text, _ = extract_invoice(UPLOAD_DIR / document["storage_name"], document["filename"], _supplier_profiles(), force_ai=use_ai)
     if not draft["lines"]:
         raise HTTPException(503, draft["notes"])
     extraction_fields = ("supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number",
@@ -340,6 +340,8 @@ def extract_again(invoice_id: int):
     now = utc_now()
     with transaction() as connection:
         connection.execute("DELETE FROM invoice_lines WHERE invoice_id=?", (invoice_id,))
+        positions_to_ids = {}
+        pending_links = []
         for position, line in enumerate(draft["lines"], 1):
             requirement = cn_requirement(line.get("hs_code", ""))
             if requirement["supp_unit"] and not line.get("supp_unit"):
@@ -349,10 +351,15 @@ def extract_again(invoice_id: int):
             values = {field: line.get(field, "") for field in LINE_FIELDS if field != "linked_line_id"}
             values["reviewed"] = 0
             columns = list(values)
-            connection.execute(
+            line_id = connection.execute(
                 f"INSERT INTO invoice_lines(invoice_id,position,{','.join(columns)},created_at,updated_at) VALUES(?,?,{','.join('?' for _ in columns)},?,?)",
                 (invoice_id, position, *(values[column] for column in columns), now, now),
-            )
+            ).lastrowid
+            positions_to_ids[position] = line_id
+            if line.get("linked_position"):
+                pending_links.append((line_id, line["linked_position"]))
+        for line_id, linked_position in pending_links:
+            connection.execute("UPDATE invoice_lines SET linked_line_id=? WHERE id=?", (positions_to_ids.get(linked_position), line_id))
         assignments = ", ".join(f"{field}=?" for field in updates)
         connection.execute(f"UPDATE invoices SET {assignments},status='needs_review',revision=revision+1,updated_at=? WHERE id=?", (*updates.values(), now, invoice_id))
         connection.execute("UPDATE documents SET extracted_text=?,extraction_method=? WHERE id=?", (extracted_text, draft["adapter"], document["id"]))

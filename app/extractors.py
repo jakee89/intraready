@@ -190,7 +190,7 @@ def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]]) -> d
                     unit_mass = format(Decimal(unit_mass) / Decimal("1000"), "f")
             for index, (description, amount) in enumerate(zip(candidates, amounts)):
                 quantity = quantities[min(index, len(quantities) - 1)] if quantities else "1"
-                kind = "goods" if index == 0 and tariff else "charge"
+                kind = "goods" if index == 0 and tariff else "charge_invoice"
                 sku = codes[index] if index < len(codes) and len(re.sub(r"\D", "", codes[index])) < 8 else ""
                 total_mass = format(Decimal(unit_mass) * Decimal(quantity), "f") if kind == "goods" and unit_mass and quantity else ""
                 parsed.append({
@@ -202,6 +202,8 @@ def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]]) -> d
                     "reviewed": False, "source_page": 1, "confidence": "saved-layout",
                     "notes": "Fast table extraction; verify against the source PDF.",
                 })
+                if kind == "charge_invoice":
+                    parsed[-1]["linked_position"] = 1
         if parsed:
             draft["lines"] = parsed
             draft["adapter"] = "fast-table"
@@ -325,7 +327,7 @@ def _parse_midocean(draft: dict, page_lines: list[list[str]], text: str) -> dict
     return draft
 
 
-def extract_invoice(path: Path, display_name: str | None = None, supplier_profiles: list[dict] | None = None) -> tuple[dict, str, str]:
+def extract_invoice(path: Path, display_name: str | None = None, supplier_profiles: list[dict] | None = None, force_ai: bool = False) -> tuple[dict, str, str]:
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     page_lines: list[list[str]] = []
@@ -355,7 +357,16 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
     matched_profile = _supplier_profile(combined, supplier_profiles)
     if matched_profile:
         _apply_supplier_defaults(draft, matched_profile)
-    if "Paul Stricker" in combined:
+    if force_ai:
+        marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
+        ai_result, ai_message = extract_structured_invoice(marked_text)
+        if ai_result:
+            draft = _apply_ai_draft(draft, ai_result)
+            if matched_profile:
+                _apply_supplier_defaults(draft, matched_profile)
+        elif ai_message:
+            draft["notes"] += " " + ai_message
+    elif "Paul Stricker" in combined:
         draft = _parse_stricker(draft, page_lines, combined)
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
         draft = _parse_midocean(draft, page_lines, combined)

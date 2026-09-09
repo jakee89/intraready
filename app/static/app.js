@@ -192,7 +192,7 @@ function renderReview() {
   const document = invoice.document;
   $("#reviewContent").innerHTML = `
     <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions">${document && ["general", "ocr", "local-ai"].includes(document.extraction_method) && invoice.status !== "submitted" ? `<button id="extractAgainButton" class="button quiet" title="Run OCR and local AI again; reviewed rows are protected">Extract again</button>` : ""}<button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="extractAgainButton" class="button quiet" title="Use the local AI reader instead of the fast supplier reader; reviewed rows are protected">Use AI reader</button>` : ""}<button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
@@ -395,8 +395,8 @@ document.addEventListener("click", async event => {
   if (extractAgain) {
     if (!confirm("Run extraction again? Existing unreviewed suggestions will be replaced; reviewed rows are protected.")) return;
     extractAgain.disabled = true; extractAgain.textContent = "Extracting…";
-    try { state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/extract-again`, { method: "POST" }); await refreshBootstrap(); renderReview(); toast("Extraction suggestions updated"); }
-    catch (error) { extractAgain.disabled = false; extractAgain.textContent = "Extract again"; toast(error.message, "error"); }
+    try { state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/extract-again?use_ai=true`, { method: "POST" }); await refreshBootstrap(); renderReview(); toast("AI extraction suggestions updated"); }
+    catch (error) { extractAgain.disabled = false; extractAgain.textContent = "Use AI reader"; toast(error.message, "error"); }
     return;
   }
   if (event.target.closest("#combineRowsButton")) {
