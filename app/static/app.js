@@ -360,8 +360,9 @@ function mappingLabels() {
 function renderMappingBoxes() {
   const mapping = state.mapping;
   const labels = mappingLabels();
-  const visible = mapping.regions.filter(region => region.page === mapping.page);
-  $("#mappingOverlay").innerHTML = [...visible, ...(mapping.draft ? [mapping.draft] : [])].map(region => `<div class="mapping-box" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("");
+  const visible = mapping.regions.filter(region => region.page === mapping.page).map(region => ({ ...region, drawing: false }));
+  if (mapping.draft) visible.push({ ...mapping.draft, drawing: true });
+  $("#mappingOverlay").innerHTML = visible.map(region => `<div class="mapping-box ${region.drawing ? "drawing" : "saved"}" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("");
 }
 
 function renderMapping() {
@@ -439,6 +440,7 @@ document.addEventListener("click", async event => {
   if (event.target.closest("#mappingPrevious")) { state.mapping.page--; renderMapping(); return; }
   if (event.target.closest("#mappingNext")) { state.mapping.page++; renderMapping(); return; }
   if (event.target.closest("#mappingUndo")) { state.mapping.regions.pop(); renderMapping(); return; }
+  if (event.target.closest("#mappingClear")) { state.mapping.regions = []; renderMapping(); return; }
   const removeRegion = event.target.closest("[data-remove-region]");
   if (removeRegion) { state.mapping.regions.splice(Number(removeRegion.dataset.removeRegion), 1); renderMapping(); return; }
   if (event.target.closest("#saveMappingButton")) {
@@ -629,7 +631,10 @@ document.addEventListener("mousemove", event => {
   renderMappingBoxes();
 });
 function finishMappingDrag() {
-  if (state.mapping.draft?.width > .005 && state.mapping.draft?.height > .005) state.mapping.regions.push(state.mapping.draft);
+  if (state.mapping.draft?.width > .005 && state.mapping.draft?.height > .005) {
+    if (!state.mapping.draft.field.startsWith("line_")) state.mapping.regions = state.mapping.regions.filter(region => region.field !== state.mapping.draft.field);
+    state.mapping.regions.push(state.mapping.draft);
+  }
   state.mapping.start = null; state.mapping.draft = null; renderMapping();
 }
 document.addEventListener("mouseup", () => { if (state.mapping.start) finishMappingDrag(); });
