@@ -121,6 +121,22 @@ CREATE TABLE IF NOT EXISTS product_facts (
     UNIQUE(organisation_id, supplier_vat, sku)
 );
 
+CREATE TABLE IF NOT EXISTS supplier_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organisation_id INTEGER NOT NULL REFERENCES organisations(id),
+    supplier_vat TEXT NOT NULL DEFAULT '',
+    supplier_name TEXT NOT NULL DEFAULT '',
+    flow TEXT NOT NULL DEFAULT 'A',
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    consignment_country TEXT NOT NULL DEFAULT '',
+    mode_transport TEXT NOT NULL DEFAULT '4',
+    terms_delivery TEXT NOT NULL DEFAULT '',
+    nature_transaction TEXT NOT NULL DEFAULT '11',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(organisation_id, supplier_vat)
+);
+
 CREATE TABLE IF NOT EXISTS review_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organisation_id INTEGER NOT NULL REFERENCES organisations(id),
@@ -150,6 +166,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_arrival ON invoices(organisation_id, arr
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(organisation_id, status);
 CREATE INDEX IF NOT EXISTS idx_lines_invoice ON invoice_lines(invoice_id, position);
 CREATE INDEX IF NOT EXISTS idx_products_lookup ON product_facts(organisation_id, supplier_vat, sku);
+CREATE INDEX IF NOT EXISTS idx_supplier_profiles ON supplier_profiles(organisation_id, supplier_vat);
 """
 
 

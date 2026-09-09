@@ -1,5 +1,12 @@
 # IntraReady
 
+## Supplier learning and CN checks
+
+- On an invoice, use **Remember supplier** after checking the shipment defaults. Approval also saves them automatically. Future PDFs are matched by supplier VAT/name and reuse flow, currency, consignment country, transport mode, Incoterm and transaction nature.
+- Common Code/Description/Quantity/Price/Amount tables use the fast local reader. If it cannot produce goods rows, the local Ollama reader remains the automatic fallback.
+- CN codes are checked against the 2026 EU Combined Nomenclature. The required supplementary unit is filled automatically; piece/pair quantities are copied from the goods quantity and all other required quantities remain visible for manual entry.
+- The bundled reference comes from the Spanish Tax Agency's EU CN 2026 workbook: https://sede.agenciatributaria.gob.es/static_files/Sede/Tema/Aduanas/Comercio_exterior/Nomenclaturas/2026/CN2026_Structure.xlsx
+
 IntraReady is a private, browser-based workspace for turning supplier invoices into reviewed Intrastat declaration data. It accepts invoices from any supplier. Known layouts can improve extraction, while unfamiliar PDFs always remain usable through the editable review screen.
 
 The app intentionally stops before government submission. It prepares and validates the file; the user uploads it to the Malta NSO portal and records the receipt reference.

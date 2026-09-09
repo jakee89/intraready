@@ -18,7 +18,7 @@ def complete_profile():
 
 
 def goods(line_id=1):
-    return {"id": line_id, "line_kind": "goods", "description": "Widget", "quantity": "5", "hs_code": "12345678",
+    return {"id": line_id, "line_kind": "goods", "description": "Widget", "quantity": "5", "hs_code": "42029298",
             "origin_country": "CN", "invoice_value": "100", "statistical_value": "100", "net_mass": "2.4", "reviewed": 1}
 
 

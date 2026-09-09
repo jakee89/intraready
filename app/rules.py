@@ -4,6 +4,8 @@ import re
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from .cn_reference import cn_requirement
+
 
 EU_COUNTRIES = {
     "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "EL",
@@ -87,6 +89,15 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
                     add("missing_line_field", f"{label} is missing on this goods row.", field, line.get("id"))
             if line.get("hs_code") and not re.fullmatch(r"\d{8}", str(line["hs_code"])):
                 add("invalid_hs_code", "Commodity code must contain exactly 8 digits.", "hs_code", line.get("id"))
+            elif line.get("hs_code"):
+                requirement = cn_requirement(str(line["hs_code"]))
+                if not requirement["valid"]:
+                    add("unknown_cn_code", f"This is not a valid {requirement['year']} CN code.", "hs_code", line.get("id"))
+                elif requirement["supp_unit"]:
+                    if not line.get("supp_qty"):
+                        add("missing_supp_quantity", f"This CN code requires supplementary quantity in {requirement['supp_unit']}.", "supp_qty", line.get("id"))
+                    if line.get("supp_unit") != requirement["supp_unit"]:
+                        add("wrong_supp_unit", f"Supplementary unit must be {requirement['supp_unit']} for this CN code.", "supp_unit", line.get("id"))
             if line.get("origin_country") and not re.fullmatch(r"[A-Z]{2}", str(line["origin_country"]).upper()):
                 add("invalid_origin", "Country of origin must be a 2-letter code.", "origin_country", line.get("id"))
             inv_value = decimal_or_none(line.get("invoice_value"))

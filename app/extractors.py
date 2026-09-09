@@ -50,9 +50,14 @@ def _first(pattern: str, text: str, flags: int = 0) -> str:
 
 
 def _base_draft(filename: str, text: str, pages: int) -> dict:
-    invoice_number = _first(r"(?im)\binvoice(?:\s+(?:no\.?|number))?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-/]{3,})", text)
+    invoice_number = _first(r"(?im)^invoice[ \t]+(?:number|no\.?)[ \t]*[:#]?[ \t]*([A-Z0-9][A-Z0-9\-/]{3,})", text)
     dates = re.findall(r"\b(?:[0-3]?\d[-/.][01]?\d[-/.](?:20)?\d{2}|20\d{2}-[01]\d-[0-3]\d)\b", text)
     total = _first(r"(?im)(?:total(?:\s+net\s+value[^\n]*|\s+amount)?)[^\d\n]*([\d., ]+)\s*(?:EUR)?\s*$", text)
+    total_header = re.search(r"(?im)^.*\bTOTAL EURO\s*$\n([^\n]+)", text)
+    if total_header:
+        amounts = re.findall(r"\d+[.,]\d{2}", total_header.group(1))
+        if amounts:
+            total = amounts[-1]
     incoterm = _first(r"(?im)\bincoterm\s*:?\s*([A-Z]{3})\b", text)
     currency = "EUR" if re.search(r"\bEUR\b|€", text) else ""
     return {
@@ -120,6 +125,88 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
         draft["lines"] = lines
         draft["adapter"] = "local-ai"
         draft["notes"] += " Local AI created review suggestions; none are approved automatically."
+    return draft
+
+
+def _supplier_profile(text: str, profiles: list[dict] | None) -> dict | None:
+    compact = re.sub(r"[^A-Z0-9]", "", text.upper())
+    normal_text = re.sub(r"[^A-Z0-9]+", " ", text.upper())
+    for profile in profiles or []:
+        vat = re.sub(r"[^A-Z0-9]", "", profile.get("supplier_vat", "").upper())
+        name = re.sub(r"[^A-Z0-9]+", " ", profile.get("supplier_name", "").upper()).strip()
+        if (len(vat) >= 6 and vat in compact) or (len(name) >= 8 and name in normal_text):
+            return profile
+    return None
+
+
+def _apply_supplier_defaults(draft: dict, profile: dict) -> None:
+    vat = re.sub(r"[^A-Z0-9]", "", profile.get("supplier_vat", "").upper())
+    country = vat[:2] if len(vat) >= 4 and vat[:2].isalpha() else ""
+    draft["supplier_name"] = profile.get("supplier_name", "") or draft["supplier_name"]
+    if country:
+        draft["supplier_vat_country"] = country
+        draft["supplier_vat_number"] = vat[2:]
+    for field in ("flow", "currency", "consignment_country", "mode_transport", "terms_delivery", "nature_transaction"):
+        if profile.get(field):
+            draft[field] = profile[field]
+    draft["notes"] += " Saved supplier defaults were applied."
+
+
+def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]]) -> dict:
+    """Fast path for common Code/Description/Quantity/Price/Amount invoice tables."""
+    for table in tables:
+        if len(table) < 2:
+            continue
+        headers = [re.sub(r"\s+", " ", str(cell or "")).strip().lower() for cell in table[0]]
+        if not {"description", "quantity", "amount"}.issubset(headers):
+            continue
+        indexes = {name: headers.index(name) for name in ("description", "quantity", "amount")}
+        code_index = headers.index("code") if "code" in headers else None
+        parsed = []
+        for raw_row in table[1:]:
+            description_lines = [x.strip() for x in str(raw_row[indexes["description"]] or "").splitlines() if x.strip()]
+            amounts = [_money(x) for x in str(raw_row[indexes["amount"]] or "").splitlines() if _money(x)]
+            quantities = [_money(x) for x in str(raw_row[indexes["quantity"]] or "").splitlines() if _money(x)]
+            codes = [x.strip() for x in str(raw_row[code_index] or "").splitlines() if x.strip()] if code_index is not None else []
+            if not amounts:
+                continue
+            metadata = re.compile(r"(?i)^(delivery note|order:|unit weight|customer order)")
+            candidates = [x for x in description_lines if not metadata.search(x)]
+            unit_line = next((x for x in description_lines if re.search(r"(?i)unit weight", x)), "")
+            unit_match = re.search(r"(?i)unit weight\s*:?[ ]*([\d.,]+)\s*(kg|g)\b", unit_line)
+            tariff = _first(r"(?i)statistical code\s*:?[ ]*(\d{8,10})", unit_line)
+            # A colour/variant line often follows the metadata but has no own amount.
+            if len(candidates) > len(amounts) and unit_line in description_lines:
+                after = description_lines.index(unit_line) + 1
+                if after < len(description_lines) and description_lines[after] in candidates:
+                    candidates.remove(description_lines[after])
+            if len(candidates) < len(amounts):
+                continue
+            candidates = candidates[:len(amounts)]
+            unit_mass = ""
+            if unit_match:
+                unit_mass = _money(unit_match.group(1))
+                if unit_match.group(2).lower() == "g" and unit_mass:
+                    unit_mass = format(Decimal(unit_mass) / Decimal("1000"), "f")
+            for index, (description, amount) in enumerate(zip(candidates, amounts)):
+                quantity = quantities[min(index, len(quantities) - 1)] if quantities else "1"
+                kind = "goods" if index == 0 and tariff else "charge"
+                sku = codes[index] if index < len(codes) and len(re.sub(r"\D", "", codes[index])) < 8 else ""
+                total_mass = format(Decimal(unit_mass) * Decimal(quantity), "f") if kind == "goods" and unit_mass and quantity else ""
+                parsed.append({
+                    "sku": sku, "description": description, "quantity": quantity, "unit": "PCE" if kind == "goods" else "",
+                    "raw_commodity_code": tariff if kind == "goods" else "", "hs_code": tariff[:8] if kind == "goods" else "",
+                    "origin_country": "", "invoice_value": amount, "statistical_value": amount if kind == "goods" else "",
+                    "unit_net_mass": unit_mass if kind == "goods" else "", "net_mass": total_mass,
+                    "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "", "line_kind": kind,
+                    "reviewed": False, "source_page": 1, "confidence": "saved-layout",
+                    "notes": "Fast table extraction; verify against the source PDF.",
+                })
+        if parsed:
+            draft["lines"] = parsed
+            draft["adapter"] = "fast-table"
+            draft["notes"] += " A reusable table layout was recognised; local AI was skipped."
+            return draft
     return draft
 
 
@@ -238,12 +325,13 @@ def _parse_midocean(draft: dict, page_lines: list[list[str]], text: str) -> dict
     return draft
 
 
-def extract_invoice(path: Path, display_name: str | None = None) -> tuple[dict, str, str]:
+def extract_invoice(path: Path, display_name: str | None = None, supplier_profiles: list[dict] | None = None) -> tuple[dict, str, str]:
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     page_lines: list[list[str]] = []
     page_texts: list[str] = []
     used_ocr = False
+    tables: list[list[list[str | None]]] = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
@@ -258,19 +346,30 @@ def extract_invoice(path: Path, display_name: str | None = None) -> tuple[dict, 
                     pass
             page_texts.append(text)
             page_lines.append(text.splitlines())
+            try:
+                tables.extend(page.extract_tables())
+            except Exception:
+                pass
     combined = "\n".join(page_texts)
     draft = _base_draft(display_name or path.name, combined, len(page_texts))
+    matched_profile = _supplier_profile(combined, supplier_profiles)
+    if matched_profile:
+        _apply_supplier_defaults(draft, matched_profile)
     if "Paul Stricker" in combined:
         draft = _parse_stricker(draft, page_lines, combined)
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
         draft = _parse_midocean(draft, page_lines, combined)
     else:
-        marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
-        ai_result, ai_message = extract_structured_invoice(marked_text)
-        if ai_result:
-            draft = _apply_ai_draft(draft, ai_result)
-        elif ai_message:
-            draft["notes"] += " " + ai_message
+        draft = _parse_common_tables(draft, tables)
+        if not draft["lines"]:
+            marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
+            ai_result, ai_message = extract_structured_invoice(marked_text)
+            if ai_result:
+                draft = _apply_ai_draft(draft, ai_result)
+                if matched_profile:
+                    _apply_supplier_defaults(draft, matched_profile)
+            elif ai_message:
+                draft["notes"] += " " + ai_message
     if used_ocr:
         draft["notes"] += " One or more pages were read with local OCR."
         if draft["adapter"] == "general":

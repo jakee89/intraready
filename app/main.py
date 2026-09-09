@@ -19,6 +19,7 @@ from .config import APP_PASSWORD, APP_TITLE, BASE_DIR, EXPORT_DIR, MAX_UPLOAD_BY
 from .db import connect, init_db, row, rows, transaction, utc_now
 from .exporter import csv_bytes, declaration_rows, inspect_schema, sha256, xml_bytes
 from .extractors import extract_invoice
+from .cn_reference import cn_requirement
 from .rules import invoice_issues, readiness
 
 
@@ -55,7 +56,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.2.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.3.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -101,6 +102,8 @@ def _payload(invoice_id: int) -> dict:
     lines_list = _lines(invoice_id)
     document = row("SELECT id, filename, page_count, extraction_method FROM documents WHERE id = ?", (invoice.get("document_id"),)) if invoice.get("document_id") else None
     result = dict(invoice)
+    for item in lines_list:
+        item["cn_reference"] = cn_requirement(item.get("hs_code", ""))
     result["lines"] = lines_list
     result["document"] = document
     result["readiness"] = readiness(invoice, lines_list, _profile())
@@ -174,6 +177,26 @@ def _suggest_from_catalogue(connection, invoice_id: int):
             connection.execute(f"UPDATE invoice_lines SET {assignments}, updated_at = ? WHERE id = ?", (*updates.values(), utc_now(), line["id"]))
 
 
+def _supplier_profiles() -> list[dict]:
+    return rows("SELECT * FROM supplier_profiles WHERE organisation_id=?", (ORG_ID,))
+
+
+def _remember_supplier(connection, invoice: dict) -> None:
+    supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice.get("supplier_vat_country", "") + invoice.get("supplier_vat_number", "")).upper())
+    if len(supplier_vat) < 6 or not invoice.get("supplier_name"):
+        return
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO supplier_profiles(organisation_id,supplier_vat,supplier_name,flow,currency,consignment_country,mode_transport,terms_delivery,nature_transaction,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organisation_id,supplier_vat) DO UPDATE SET
+        supplier_name=excluded.supplier_name,flow=excluded.flow,currency=excluded.currency,
+        consignment_country=excluded.consignment_country,mode_transport=excluded.mode_transport,
+        terms_delivery=excluded.terms_delivery,nature_transaction=excluded.nature_transaction,updated_at=excluded.updated_at""",
+        (ORG_ID, supplier_vat, invoice["supplier_name"], invoice["flow"], invoice["currency"], invoice["consignment_country"],
+         invoice["mode_transport"], invoice["terms_delivery"], invoice["nature_transaction"], now, now),
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return TEMPLATE_PATH.read_text(encoding="utf-8").replace("{{APP_TITLE}}", APP_TITLE)
@@ -236,7 +259,7 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
         destination = UPLOAD_DIR / storage_name
         destination.write_bytes(data)
         try:
-            draft, extracted_text, verified_digest = extract_invoice(destination, filename)
+            draft, extracted_text, verified_digest = extract_invoice(destination, filename, _supplier_profiles())
             if verified_digest != digest:
                 raise ValueError("Stored file hash changed during extraction")
         except Exception as exc:
@@ -258,6 +281,11 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             positions_to_ids = {}
             pending_links = []
             for position, line in enumerate(draft["lines"], 1):
+                requirement = cn_requirement(line.get("hs_code", ""))
+                if requirement["supp_unit"] and not line.get("supp_unit"):
+                    line["supp_unit"] = requirement["supp_unit"]
+                if requirement["supp_unit"] in {"p/st", "pa"} and line.get("quantity") and not line.get("supp_qty"):
+                    line["supp_qty"] = line["quantity"]
                 values = {field: line.get(field, "") for field in LINE_FIELDS if field not in {"linked_line_id"}}
                 values["reviewed"] = 1 if values.get("reviewed") else 0
                 columns = list(values)
@@ -302,7 +330,7 @@ def extract_again(invoice_id: int):
     document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
     if not document:
         raise HTTPException(422, "This manual invoice has no PDF to extract.")
-    draft, extracted_text, _ = extract_invoice(UPLOAD_DIR / document["storage_name"], document["filename"])
+    draft, extracted_text, _ = extract_invoice(UPLOAD_DIR / document["storage_name"], document["filename"], _supplier_profiles())
     if not draft["lines"]:
         raise HTTPException(503, draft["notes"])
     extraction_fields = ("supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number",
@@ -313,6 +341,11 @@ def extract_again(invoice_id: int):
     with transaction() as connection:
         connection.execute("DELETE FROM invoice_lines WHERE invoice_id=?", (invoice_id,))
         for position, line in enumerate(draft["lines"], 1):
+            requirement = cn_requirement(line.get("hs_code", ""))
+            if requirement["supp_unit"] and not line.get("supp_unit"):
+                line["supp_unit"] = requirement["supp_unit"]
+            if requirement["supp_unit"] in {"p/st", "pa"} and line.get("quantity") and not line.get("supp_qty"):
+                line["supp_qty"] = line["quantity"]
             values = {field: line.get(field, "") for field in LINE_FIELDS if field != "linked_line_id"}
             values["reviewed"] = 0
             columns = list(values)
@@ -373,6 +406,11 @@ async def create_line(invoice_id: int, request: Request):
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
     body = await request.json()
     values = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
+    requirement = cn_requirement(values.get("hs_code", ""))
+    if requirement["supp_unit"] and not values.get("supp_unit"):
+        values["supp_unit"] = requirement["supp_unit"]
+    if requirement["supp_unit"] in {"p/st", "pa"} and values.get("quantity") and not values.get("supp_qty"):
+        values["supp_qty"] = values["quantity"]
     if values.get("unit_net_mass") and values.get("quantity"):
         calculated = format(Decimal(values["unit_net_mass"]) * Decimal(values["quantity"]), "f")
         if not values.get("net_mass"):
@@ -403,6 +441,12 @@ async def update_line(line_id: int, request: Request):
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
     body = await request.json()
     updates = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
+    if "hs_code" in updates:
+        requirement = cn_requirement(updates["hs_code"])
+        if requirement["supp_unit"] and not updates.get("supp_unit", found.get("supp_unit")):
+            updates["supp_unit"] = requirement["supp_unit"]
+        if requirement["supp_unit"] in {"p/st", "pa"} and updates.get("quantity", found.get("quantity")) and not updates.get("supp_qty", found.get("supp_qty")):
+            updates["supp_qty"] = updates.get("quantity", found.get("quantity"))
     if "unit_net_mass" in updates:
         quantity = updates.get("quantity", found["quantity"])
         calculated = format(Decimal(updates["unit_net_mass"]) * Decimal(quantity), "f") if updates["unit_net_mass"] and quantity else ""
@@ -529,8 +573,18 @@ def approve_invoice(invoice_id: int):
         raise HTTPException(422, {"message": "Resolve blocking issues before approval.", "issues": check["issues"]})
     with transaction() as connection:
         connection.execute("UPDATE invoices SET status='approved',updated_at=? WHERE id=?", (utc_now(), invoice_id))
+        _remember_supplier(connection, invoice)
         _record_event(connection, invoice_id, "invoice_approved", {"revision": invoice["revision"]})
     return _payload(invoice_id)
+
+
+@app.post("/api/invoices/{invoice_id}/remember-supplier")
+def remember_supplier(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    with transaction() as connection:
+        _remember_supplier(connection, invoice)
+        _record_event(connection, invoice_id, "supplier_defaults_remembered", {})
+    return {"saved": True, "supplier": invoice["supplier_name"]}
 
 
 @app.post("/api/invoices/{invoice_id}/reopen")
