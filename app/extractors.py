@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import io
 import re
 from collections import OrderedDict
 from datetime import datetime
@@ -21,6 +23,20 @@ COUNTRY_NAMES = {
     "Portugal": "PT", "Romania": "RO", "Slovakia": "SK", "Slovenia": "SI",
     "Spain": "ES", "Sweden": "SE", "China": "CN", "India": "IN", "Malta": "MT",
 }
+
+
+def _vision_pages(path: Path, maximum: int = 6) -> list[str]:
+    images = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages[:maximum]:
+                rendered = page.to_image(resolution=150).original.convert("RGB")
+                buffer = io.BytesIO()
+                rendered.save(buffer, format="JPEG", quality=82, optimize=True)
+                images.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    except Exception:
+        return images
+    return images
 
 
 def _money(value: str) -> str:
@@ -379,9 +395,13 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
         _apply_supplier_defaults(draft, matched_profile)
     if force_ai:
         marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
-        ai_result, ai_message = extract_structured_invoice(marked_text)
+        vision_pages = _vision_pages(path)
+        ai_result, ai_message = extract_structured_invoice(marked_text, vision_pages)
         if ai_result:
             draft = _apply_ai_draft(draft, ai_result)
+            if vision_pages:
+                draft["adapter"] = "vision-ai"
+                draft["notes"] += " Invoice page images were analysed to preserve the table layout."
             if matched_profile:
                 _apply_supplier_defaults(draft, matched_profile)
         elif ai_message:
@@ -394,9 +414,13 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
         draft = _parse_common_tables(draft, tables, combined)
         if not draft["lines"]:
             marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
-            ai_result, ai_message = extract_structured_invoice(marked_text)
+            vision_pages = _vision_pages(path)
+            ai_result, ai_message = extract_structured_invoice(marked_text, vision_pages)
             if ai_result:
                 draft = _apply_ai_draft(draft, ai_result)
+                if vision_pages:
+                    draft["adapter"] = "vision-ai"
+                    draft["notes"] += " Invoice page images were analysed to preserve the table layout."
                 if matched_profile:
                     _apply_supplier_defaults(draft, matched_profile)
             elif ai_message:

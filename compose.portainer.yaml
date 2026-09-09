@@ -1,7 +1,7 @@
 services:
   intraready:
     build: .
-    image: intraready:0.3.5
+    image: intraready:0.4.0
     container_name: intraready
     restart: unless-stopped
     environment:
@@ -10,7 +10,7 @@ services:
       INTRASTAT_APP_PASSWORD: ${INTRASTAT_APP_PASSWORD:-}
       INTRASTAT_MAX_UPLOAD_MB: 20
       INTRASTAT_OLLAMA_URL: http://ollama:11434
-      INTRASTAT_OLLAMA_MODEL: ${INTRASTAT_OLLAMA_MODEL:-qwen2.5:3b}
+      INTRASTAT_OLLAMA_MODEL: ${INTRASTAT_OLLAMA_MODEL:-qwen2.5vl:3b}
     depends_on:
       - ollama
     ports:
@@ -28,6 +28,7 @@ services:
     image: ollama/ollama:latest
     container_name: intraready-ollama
     restart: unless-stopped
+    gpus: all
     volumes:
       - intraready_ai:/root/.ollama
 
@@ -40,7 +41,7 @@ services:
     depends_on:
       - ollama
     entrypoint: ["/bin/sh", "-c"]
-    command: ["until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull ${INTRASTAT_OLLAMA_MODEL:-qwen2.5:3b}"]
+    command: ["until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull ${INTRASTAT_OLLAMA_MODEL:-qwen2.5vl:3b}"]
 
 volumes:
   intraready_data:
