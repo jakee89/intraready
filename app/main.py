@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 import uuid
+import io
 from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -14,6 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+import pdfplumber
 
 from .config import APP_PASSWORD, APP_TITLE, BASE_DIR, EXPORT_DIR, MAX_UPLOAD_BYTES, SCHEMA_DIR, UPLOAD_DIR, ensure_directories
 from .db import connect, init_db, row, rows, transaction, utc_now
@@ -57,7 +59,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.4.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.5.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -346,6 +348,56 @@ def document_file(document_id: int):
         filename=Path(document["filename"]).name,
         content_disposition_type="inline",
     )
+
+
+@app.get("/api/documents/{document_id}/pages/{page_number}.png")
+def document_page_image(document_id: int, page_number: int):
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (document_id, ORG_ID))
+    if not document:
+        raise HTTPException(404, "Document not found")
+    with pdfplumber.open(UPLOAD_DIR / document["storage_name"]) as pdf:
+        if page_number < 1 or page_number > len(pdf.pages):
+            raise HTTPException(404, "Page not found")
+        image = pdf.pages[page_number - 1].to_image(resolution=150).original.convert("RGB")
+        output = io.BytesIO()
+        image.save(output, format="PNG", optimize=True)
+    return Response(output.getvalue(), media_type="image/png")
+
+
+@app.get("/api/invoices/{invoice_id}/supplier-mapping")
+def get_supplier_mapping(invoice_id: int):
+    invoice = _invoice(invoice_id)
+    if not invoice.get("document_id"):
+        raise HTTPException(422, "This invoice has no PDF.")
+    supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
+    profile = row("SELECT * FROM supplier_profiles WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat)) if supplier_vat else None
+    return {"document_id": invoice["document_id"], "supplier": invoice["supplier_name"], "supplier_vat": supplier_vat,
+            "page_count": row("SELECT page_count FROM documents WHERE id=?", (invoice["document_id"],))["page_count"],
+            "regions": json.loads(profile.get("layout_mapping") or "[]") if profile else []}
+
+
+@app.put("/api/invoices/{invoice_id}/supplier-mapping")
+async def save_supplier_mapping(invoice_id: int, request: Request):
+    invoice = _invoice(invoice_id)
+    supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
+    if len(supplier_vat) < 6 or not invoice.get("supplier_name"):
+        raise HTTPException(422, "Enter the supplier name and VAT number before saving a map.")
+    allowed = set(INVOICE_FIELDS) | {f"line_{field}" for field in ("sku", "description", "quantity", "unit", "hs_code", "origin_country", "invoice_value", "unit_net_mass")}
+    clean = []
+    for region in (await request.json()).get("regions", [])[:40]:
+        field = str(region.get("field", ""))
+        if field not in allowed:
+            continue
+        values = {key: max(0.0, min(1.0, float(region.get(key, 0)))) for key in ("x", "y", "width", "height")}
+        if values["width"] < .005 or values["height"] < .005:
+            continue
+        clean.append({"field": field, "page": max(1, int(region.get("page", 1))), **values})
+    with transaction() as connection:
+        _remember_supplier(connection, invoice)
+        connection.execute("UPDATE supplier_profiles SET layout_mapping=?,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
+                           (json.dumps(clean), utc_now(), ORG_ID, supplier_vat))
+        _record_event(connection, invoice_id, "supplier_mapping_saved", {"regions": len(clean)})
+    return {"saved": True, "regions": clean}
 
 
 @app.post("/api/invoices/{invoice_id}/extract-again")

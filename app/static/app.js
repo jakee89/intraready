@@ -5,6 +5,7 @@ const state = {
   exports: [],
   declaration: null,
   pendingReviews: new Map(),
+  mapping: { regions: [], page: 1, pageCount: 1, documentId: null, start: null, draft: null },
   page: "dashboard",
 };
 
@@ -194,7 +195,7 @@ function renderReview() {
   const document = invoice.document;
   $("#reviewContent").innerHTML = `
     <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="extractAgainButton" class="button quiet" title="Use the local AI reader instead of the fast supplier reader; reviewed rows are protected">Use AI reader</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify and link printing, freight and other extracted charges">Prepare invoice</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="extractAgainButton" class="button quiet" title="Use the local AI reader instead of the fast supplier reader; reviewed rows are protected">Use AI reader</button><button id="mapSupplierButton" class="button quiet" title="Teach the app where this supplier prints each field">Map supplier</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify and link printing, freight and other extracted charges">Prepare invoice</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
@@ -352,6 +353,26 @@ function openCatalogueDialog() {
   $("#catalogueDialog").showModal();
 }
 
+function renderMapping() {
+  const mapping = state.mapping;
+  $("#mappingImage").src = `/api/documents/${mapping.documentId}/pages/${mapping.page}.png`;
+  $("#mappingPageLabel").textContent = `Page ${mapping.page} of ${mapping.pageCount}`;
+  $("#mappingPrevious").disabled = mapping.page <= 1;
+  $("#mappingNext").disabled = mapping.page >= mapping.pageCount;
+  const labels = Object.fromEntries([...$("#mappingField").options].map(option => [option.value, option.textContent]));
+  const visible = mapping.regions.filter(region => region.page === mapping.page);
+  $("#mappingOverlay").innerHTML = [...visible, ...(mapping.draft ? [mapping.draft] : [])].map(region => `<div class="mapping-box" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("");
+  $("#mappingRegionList").innerHTML = mapping.regions.map((region, index) => `<button class="mini-button" data-remove-region="${index}">${escapeHtml(labels[region.field] || region.field)} · p${region.page} ×</button>`).join("");
+}
+
+async function openSupplierMapping() {
+  try {
+    const source = await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping`);
+    state.mapping = { regions: source.regions || [], page: 1, pageCount: source.page_count || 1, documentId: source.document_id, start: null, draft: null };
+    $("#supplierMapDialog").showModal(); renderMapping();
+  } catch (error) { toast(error.message, "error"); }
+}
+
 async function processFiles(files) {
   if (!files.length) return;
   const target = $("#uploadResults");
@@ -400,6 +421,20 @@ document.addEventListener("click", async event => {
     extractAgain.disabled = true; extractAgain.textContent = "Extracting…";
     try { state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/extract-again?use_ai=true`, { method: "POST" }); await refreshBootstrap(); renderReview(); toast("AI extraction suggestions updated"); }
     catch (error) { extractAgain.disabled = false; extractAgain.textContent = "Use AI reader"; toast(error.message, "error"); }
+    return;
+  }
+  if (event.target.closest("#mapSupplierButton")) { openSupplierMapping(); return; }
+  if (event.target.closest("[data-close-mapping]")) { $("#supplierMapDialog").close(); return; }
+  if (event.target.closest("#mappingPrevious")) { state.mapping.page--; renderMapping(); return; }
+  if (event.target.closest("#mappingNext")) { state.mapping.page++; renderMapping(); return; }
+  if (event.target.closest("#mappingUndo")) { state.mapping.regions.pop(); renderMapping(); return; }
+  const removeRegion = event.target.closest("[data-remove-region]");
+  if (removeRegion) { state.mapping.regions.splice(Number(removeRegion.dataset.removeRegion), 1); renderMapping(); return; }
+  if (event.target.closest("#saveMappingButton")) {
+    try {
+      await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping`, { method: "PUT", body: JSON.stringify({ regions: state.mapping.regions }) });
+      $("#supplierMapDialog").close(); toast("Supplier map saved — future invoices will use it before AI");
+    } catch (error) { toast(error.message, "error"); }
     return;
   }
   if (event.target.closest("#combineRowsButton")) {
@@ -561,6 +596,29 @@ const dropZone = $("#uploadZone");
 ["dragenter", "dragover"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.add("dragging"); }));
 ["dragleave", "drop"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.remove("dragging"); }));
 dropZone.addEventListener("drop", event => processFiles(event.dataTransfer.files));
+
+const mappingOverlay = $("#mappingOverlay");
+function mappingPoint(event) {
+  const box = mappingOverlay.getBoundingClientRect();
+  return { x: Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)), y: Math.max(0, Math.min(1, (event.clientY - box.top) / box.height)) };
+}
+mappingOverlay.addEventListener("pointerdown", event => {
+  event.preventDefault();
+  mappingOverlay.setPointerCapture(event.pointerId);
+  state.mapping.start = mappingPoint(event);
+});
+mappingOverlay.addEventListener("pointermove", event => {
+  if (!state.mapping.start) return;
+  const point = mappingPoint(event), start = state.mapping.start;
+  state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
+    x: Math.min(start.x, point.x), y: Math.min(start.y, point.y),
+    width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
+  renderMapping();
+});
+mappingOverlay.addEventListener("pointerup", () => {
+  if (state.mapping.draft?.width > .005 && state.mapping.draft?.height > .005) state.mapping.regions.push(state.mapping.draft);
+  state.mapping.start = null; state.mapping.draft = null; renderMapping();
+});
 
 document.addEventListener("keydown", event => {
   const opener = event.target.closest?.("[data-open-invoice]");

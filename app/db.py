@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     mode_transport TEXT NOT NULL DEFAULT '4',
     terms_delivery TEXT NOT NULL DEFAULT '',
     nature_transaction TEXT NOT NULL DEFAULT '11',
+    layout_mapping TEXT NOT NULL DEFAULT '',
     flow TEXT NOT NULL DEFAULT 'A',
     status TEXT NOT NULL DEFAULT 'needs_review',
     notes TEXT NOT NULL DEFAULT '',
@@ -208,6 +209,9 @@ def init_db() -> None:
                 connection.execute(f"ALTER TABLE invoice_lines ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if "net_mass_overridden" not in existing_line_columns:
             connection.execute("ALTER TABLE invoice_lines ADD COLUMN net_mass_overridden INTEGER NOT NULL DEFAULT 0")
+        supplier_columns = {item[1] for item in connection.execute("PRAGMA table_info(supplier_profiles)")}
+        if "layout_mapping" not in supplier_columns:
+            connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_mapping TEXT NOT NULL DEFAULT ''")
         now = utc_now()
         connection.execute(
             "INSERT OR IGNORE INTO organisations(id, name, created_at) VALUES(1, ?, ?)",

@@ -210,6 +210,22 @@
     <div class="form-actions"><button class="button quiet" data-close-cn>Cancel</button></div>
   </dialog>
 
+  <dialog id="supplierMapDialog" class="modal mapping-modal">
+    <div class="modal-head"><div><p class="eyebrow">SUPPLIER TEMPLATE</p><h2>Map invoice fields</h2></div><button class="icon-button" data-close-mapping aria-label="Close">×</button></div>
+    <p>Choose a field, then drag a box around its value. For product columns, draw down the data rows and exclude the headings.</p>
+    <div class="mapping-toolbar">
+      <select id="mappingField">
+        <optgroup label="Invoice fields"><option value="invoice_number">Invoice number</option><option value="invoice_date">Invoice date</option><option value="total_value">Invoice total</option><option value="supplier_name">Supplier name</option><option value="supplier_vat_number">Supplier VAT number</option><option value="currency">Currency</option><option value="terms_delivery">Delivery terms</option></optgroup>
+        <optgroup label="Repeating product columns"><option value="line_sku">SKU column</option><option value="line_description">Description column</option><option value="line_quantity">Quantity column</option><option value="line_unit">Unit column</option><option value="line_hs_code">CN/TARIC column</option><option value="line_origin_country">Origin column</option><option value="line_invoice_value">Line total column</option><option value="line_unit_net_mass">Unit weight column</option></optgroup>
+      </select>
+      <button id="mappingPrevious" class="button quiet">Previous page</button><span id="mappingPageLabel">Page 1</span><button id="mappingNext" class="button quiet">Next page</button>
+      <button id="mappingUndo" class="button quiet">Undo</button>
+    </div>
+    <div id="mappingCanvas" class="mapping-canvas"><img id="mappingImage" alt="Invoice page"><div id="mappingOverlay"></div></div>
+    <div id="mappingRegionList" class="mapping-region-list"></div>
+    <div class="form-actions"><button class="button quiet" data-close-mapping>Cancel</button><button id="saveMappingButton" class="button primary">Save supplier map</button></div>
+  </dialog>
+
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
 </body>
 </html>

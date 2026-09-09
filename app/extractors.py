@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import io
+import json
 import re
 from collections import OrderedDict
 from datetime import datetime
@@ -176,6 +177,88 @@ def _apply_supplier_defaults(draft: dict, profile: dict) -> None:
         if profile.get(field):
             draft[field] = profile[field]
     draft["notes"] += " Saved supplier defaults were applied."
+
+
+def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
+    try:
+        regions = json.loads(profile.get("layout_mapping") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return draft
+    if not regions:
+        return draft
+    columns: dict[str, list[dict]] = {}
+    with pdfplumber.open(path) as pdf:
+        for region in regions:
+            page_number = int(region.get("page", 1))
+            if page_number < 1 or page_number > len(pdf.pages):
+                continue
+            page = pdf.pages[page_number - 1]
+            x, y, width, height = (float(region.get(key, 0)) for key in ("x", "y", "width", "height"))
+            box = (x * page.width, y * page.height, (x + width) * page.width, (y + height) * page.height)
+            crop = page.crop(box)
+            field = str(region.get("field", ""))
+            if field.startswith("line_"):
+                grouped: list[dict] = []
+                for word in crop.extract_words(x_tolerance=2, y_tolerance=3):
+                    relative_y = float(word["top"]) / page.height
+                    existing = next((item for item in grouped if abs(item["y"] - relative_y) < 0.006), None)
+                    if existing:
+                        existing["text"] += " " + word["text"]
+                    else:
+                        grouped.append({"y": relative_y, "text": word["text"]})
+                columns[field[5:]] = grouped
+            else:
+                value = (crop.extract_text(x_tolerance=2, y_tolerance=2) or "").strip().replace("\n", " ")
+                if not value:
+                    continue
+                if field in {"invoice_date", "arrival_date"}:
+                    value = _iso_date(value)
+                elif field == "total_value":
+                    value = _money(value)
+                elif field in {"supplier_vat_country", "currency", "consignment_country", "terms_delivery"}:
+                    value = value.upper()
+                if field in draft and value:
+                    draft[field] = value
+    anchors = columns.get("invoice_value") or columns.get("quantity") or columns.get("sku") or []
+    parsed = []
+    last_goods_position = None
+    for anchor in anchors:
+        values = {}
+        for field, entries in columns.items():
+            nearest = min(entries, key=lambda item: abs(item["y"] - anchor["y"]), default=None)
+            values[field] = nearest["text"].strip() if nearest and abs(nearest["y"] - anchor["y"]) < 0.018 else ""
+        description = values.get("description", "")
+        amount = _money(values.get("invoice_value", ""))
+        quantity = _money(values.get("quantity", ""))
+        if not description or not amount:
+            continue
+        raw_code = re.sub(r"\D", "", values.get("hs_code", ""))
+        unit_mass_text = values.get("unit_net_mass", "")
+        unit_mass = _money(_first(r"([\d.,]+)", unit_mass_text))
+        if unit_mass and re.search(r"(?i)\bg\b", unit_mass_text) and not re.search(r"(?i)\bkg\b", unit_mass_text):
+            unit_mass = format(Decimal(unit_mass) / Decimal("1000"), "f")
+        total_mass = format(Decimal(unit_mass) * Decimal(quantity), "f") if unit_mass and quantity else ""
+        kind = "goods"
+        if not raw_code and re.search(r"(?i)freight|transport|shipping|carriage|delivery cost", description):
+            kind = "charge_stat"
+        elif not raw_code and re.search(r"(?i)print|engraving|logo|personalisation|decoration|setup|set-up|handling", description):
+            kind = "charge_invoice"
+        parsed.append({
+            "sku": values.get("sku", ""), "description": description, "quantity": quantity, "unit": values.get("unit", "").upper(),
+            "raw_commodity_code": raw_code, "hs_code": raw_code[:8], "origin_country": values.get("origin_country", "").upper(),
+            "invoice_value": amount, "statistical_value": amount, "unit_net_mass": unit_mass, "net_mass": total_mass,
+            "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "", "line_kind": kind, "reviewed": False,
+            "source_page": 1, "confidence": "manual-map", "notes": "Extracted with the saved supplier map; verify this row.",
+        })
+        if kind == "goods":
+            last_goods_position = len(parsed)
+        elif last_goods_position:
+            parsed[-1]["linked_position"] = last_goods_position
+    if parsed:
+        draft["lines"] = parsed
+        draft["adapter"] = "manual-map"
+        draft["notes"] += " Saved visual supplier mapping was used; AI was skipped."
+    return draft
 
 
 def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]], text: str) -> dict:
@@ -406,6 +489,18 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
                 _apply_supplier_defaults(draft, matched_profile)
         elif ai_message:
             draft["notes"] += " " + ai_message
+    elif matched_profile and matched_profile.get("layout_mapping"):
+        draft = _parse_saved_mapping(path, draft, matched_profile)
+        if not draft["lines"]:
+            marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
+            vision_pages = _vision_pages(path)
+            ai_result, ai_message = extract_structured_invoice(marked_text, vision_pages)
+            if ai_result:
+                draft = _apply_ai_draft(draft, ai_result)
+                _apply_supplier_defaults(draft, matched_profile)
+                draft["adapter"] = "vision-ai" if vision_pages else "local-ai"
+            elif ai_message:
+                draft["notes"] += " " + ai_message
     elif "Paul Stricker" in combined:
         draft = _parse_stricker(draft, page_lines, combined)
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
