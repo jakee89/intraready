@@ -70,3 +70,28 @@ DOCUMENT:
         return result if isinstance(result, dict) else None, "Local AI returned no invoice object."
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as exc:
         return None, f"Local AI was unavailable ({type(exc).__name__}). Try Extract again when it is ready."
+
+
+def rank_cn_candidates(product: str, candidates: list[dict]) -> list[dict] | None:
+    if not OLLAMA_URL or not candidates:
+        return None
+    schema = {"type": "object", "properties": {"suggestions": {"type": "array", "items": {
+        "type": "object", "properties": {"code": {"type": "string"}, "reason": {"type": "string"},
+        "confidence": {"type": "integer"}}, "required": ["code", "reason", "confidence"]}}},
+        "required": ["suggestions"]}
+    prompt = """Rank the most plausible EU 8-digit CN codes for this product using only the supplied candidates.
+Return at most five. Classification depends on material and use, so explain uncertainty briefly and never create a code.
+Product information: """ + product[:2000] + "\nCandidates:\n" + "\n".join(
+        f"{item['code']}: {item['description']}" for item in candidates
+    )
+    payload = json.dumps({"model": OLLAMA_MODEL, "stream": False, "format": schema,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "options": {"temperature": 0, "num_ctx": 4096}}).encode("utf-8")
+    request = Request(OLLAMA_URL.rstrip("/") + "/api/chat", data=payload,
+                      headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=90) as response:
+            result = json.loads(json.loads(response.read()).get("message", {}).get("content", "{}"))
+        return result.get("suggestions") if isinstance(result, dict) else None
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError):
+        return None

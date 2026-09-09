@@ -19,7 +19,8 @@ from .config import APP_PASSWORD, APP_TITLE, BASE_DIR, EXPORT_DIR, MAX_UPLOAD_BY
 from .db import connect, init_db, row, rows, transaction, utc_now
 from .exporter import csv_bytes, declaration_rows, inspect_schema, sha256, xml_bytes
 from .extractors import extract_invoice
-from .cn_reference import cn_requirement
+from .cn_reference import cn_requirement, search_cn
+from .local_ai import rank_cn_candidates
 from .rules import invoice_issues, readiness
 
 
@@ -56,7 +57,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.3.4", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.3.5", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -524,6 +525,35 @@ async def review_lines(invoice_id: int, request: Request):
         if changes:
             _invalidate(connection, invoice_id, "lines_reviewed", {"count": len(changes)})
     return _payload(invoice_id)
+
+
+@app.get("/api/lines/{line_id}/cn-suggestions")
+def cn_suggestions(line_id: int):
+    found = row("""SELECT l.*,i.supplier_name,i.supplier_vat_country,i.supplier_vat_number,i.organisation_id
+                 FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?""", (line_id,))
+    if not found or found["organisation_id"] != ORG_ID:
+        raise HTTPException(404, "Line not found")
+    product_text = " ".join(filter(None, [found.get("description"), found.get("sku"), found.get("notes")]))
+    candidates = search_cn(product_text, 18)
+    remembered = rows("SELECT * FROM product_facts WHERE organisation_id=? AND sku=? AND hs_code<>''", (ORG_ID, found.get("sku", ""))) if found.get("sku") else []
+    by_code = {item["code"]: item for item in candidates}
+    for fact in remembered:
+        requirement = cn_requirement(fact["hs_code"])
+        by_code[fact["hs_code"]] = {"code": fact["hs_code"], "description": fact["description"],
+                                     "score": 1, "supp_unit": requirement["supp_unit"], "source": "Verified product memory"}
+    candidates = sorted(by_code.values(), key=lambda item: item["score"], reverse=True)[:18]
+    ai_ranking = rank_cn_candidates(product_text, candidates)
+    if ai_ranking:
+        details = {item["code"]: item for item in candidates}
+        ranked = []
+        for suggestion in ai_ranking:
+            item = details.get(str(suggestion.get("code", "")))
+            if item:
+                ranked.append({**item, "confidence": max(0, min(100, int(suggestion.get("confidence", 0)))),
+                               "reason": str(suggestion.get("reason", "")), "source": "Local AI + " + item["source"]})
+        if ranked:
+            candidates = ranked
+    return {"query": product_text, "suggestions": candidates[:5], "year": 2026}
 
 
 @app.delete("/api/lines/{line_id}")

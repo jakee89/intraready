@@ -180,6 +180,8 @@ select:focus, input:focus, textarea:focus { border-color: var(--teal); }
 .issue-list { display: grid; gap: 7px; margin-top: 10px; }
 .issue { display: flex; gap: 10px; padding: 9px 11px; border-radius: 9px; color: #6d4e2c; background: #fff8eb; font-size: .76rem; }
 .issue button { margin-left: auto; border: 0; color: var(--teal-dark); background: transparent; font-weight: 750; }
+.cn-suggestion { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 13px; border: 1px solid var(--line); border-radius: 10px; }
+.cn-suggestion p { margin: 4px 0 0; color: var(--muted); font-size: .76rem; }
 .line-toolbar { display: flex; align-items: center; gap: 9px; }
 .line-toolbar select { min-width: 130px; }
 .line-table { font-size: .78rem; }

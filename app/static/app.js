@@ -231,7 +231,7 @@ function lineRow(line, allLines, issueLines) {
     <td><input data-line-id="${line.id}" data-line-field="unit_net_mass" value="${escapeHtml(line.unit_net_mass)}" inputmode="decimal" title="Net weight of one unit; remembered by supplier and SKU" ${line.line_kind!=="goods"?"disabled":""}></td>
     <td><input data-line-id="${line.id}" data-line-field="net_mass" value="${escapeHtml(line.net_mass)}" inputmode="decimal" title="Total row weight used for Intrastat${line.net_mass_overridden ? " · manually overridden" : " · quantity × unit weight"}" ${line.line_kind!=="goods"?"disabled":""}></td>
     <td><input type="checkbox" data-review-line="${line.id}" ${state.pendingReviews.has(line.id) ? (state.pendingReviews.get(line.id) ? "checked" : "") : (line.reviewed ? "checked" : "")} aria-label="Mark row reviewed"></td>
-    <td><div class="row-actions"><button class="mini-button" data-edit-line="${line.id}" title="Edit all row fields">Details</button>${line.line_kind==="goods" ? `<button class="mini-button" data-remember-line="${line.id}" title="Save verified product facts for this supplier and SKU">Remember</button>` : ""}<button class="mini-button delete" data-delete-line="${line.id}">Delete</button></div><small class="subline">Page ${line.source_page || "—"}</small></td>
+    <td><div class="row-actions"><button class="mini-button" data-edit-line="${line.id}" title="Edit all row fields">Details</button>${line.line_kind==="goods" ? `<button class="mini-button" data-suggest-cn="${line.id}" title="Search official CN descriptions and rank them with local AI">Suggest CN</button><button class="mini-button" data-remember-line="${line.id}" title="Save verified product facts for this supplier and SKU">Remember</button>` : ""}<button class="mini-button delete" data-delete-line="${line.id}">Delete</button></div><small class="subline">Page ${line.source_page || "—"}</small></td>
   </tr>`;
 }
 
@@ -446,6 +446,28 @@ document.addEventListener("click", async event => {
     catch (error) { toast(error.message, "error"); }
     return;
   }
+  const suggestCn = event.target.closest("[data-suggest-cn]");
+  if (suggestCn) {
+    const dialog = $("#cnSuggestionDialog");
+    const target = $("#cnSuggestionResults");
+    dialog.dataset.lineId = suggestCn.dataset.suggestCn;
+    target.innerHTML = `<div class="issue"><span>Searching the official catalogue and asking local AI…</span></div>`;
+    dialog.showModal();
+    try {
+      const result = await api(`/api/lines/${suggestCn.dataset.suggestCn}/cn-suggestions`);
+      target.innerHTML = result.suggestions.length ? result.suggestions.map(item => `<div class="cn-suggestion"><div><strong>${escapeHtml(item.code)} · ${escapeHtml(item.description)}</strong><p>${escapeHtml(item.reason || item.source)}${item.supp_unit ? ` · Requires ${escapeHtml(item.supp_unit)}` : ""}</p></div><span>${item.confidence !== undefined ? `${item.confidence}%` : "Candidate"}</span><button class="button secondary" data-choose-cn="${escapeHtml(item.code)}">Use code</button></div>`).join("") : `<div class="issue"><span>No suitable candidates were found. Add material and intended use to the row notes and try again.</span></div>`;
+    } catch (error) { target.innerHTML = `<div class="issue"><span>${escapeHtml(error.message)}</span></div>`; }
+    return;
+  }
+  const chooseCn = event.target.closest("[data-choose-cn]");
+  if (chooseCn) {
+    try {
+      state.currentInvoice = await api(`/api/lines/${$("#cnSuggestionDialog").dataset.lineId}`, { method: "PATCH", body: JSON.stringify({ hs_code: chooseCn.dataset.chooseCn }) });
+      $("#cnSuggestionDialog").close(); await refreshBootstrap(); renderReview(); toast("CN code applied — confirm it, then Remember the product");
+    } catch (error) { toast(error.message, "error"); }
+    return;
+  }
+  if (event.target.closest("[data-close-cn]")) { $("#cnSuggestionDialog").close(); return; }
   const deletion = event.target.closest("[data-delete-line]");
   if (deletion && confirm("Delete this row from the draft? The original PDF is kept.")) {
     try { state.currentInvoice = await api(`/api/lines/${deletion.dataset.deleteLine}`, { method: "DELETE" }); await refreshBootstrap(); renderReview(); toast("Row deleted"); }
