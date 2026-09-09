@@ -133,9 +133,23 @@ CREATE TABLE IF NOT EXISTS supplier_profiles (
     mode_transport TEXT NOT NULL DEFAULT '4',
     terms_delivery TEXT NOT NULL DEFAULT '',
     nature_transaction TEXT NOT NULL DEFAULT '11',
+    layout_mapping TEXT NOT NULL DEFAULT '',
+    layout_fingerprint TEXT NOT NULL DEFAULT '',
+    layout_version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(organisation_id, supplier_vat)
+);
+
+CREATE TABLE IF NOT EXISTS extraction_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organisation_id INTEGER NOT NULL REFERENCES organisations(id),
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS review_events (
@@ -212,6 +226,10 @@ def init_db() -> None:
         supplier_columns = {item[1] for item in connection.execute("PRAGMA table_info(supplier_profiles)")}
         if "layout_mapping" not in supplier_columns:
             connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_mapping TEXT NOT NULL DEFAULT ''")
+        if "layout_fingerprint" not in supplier_columns:
+            connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_fingerprint TEXT NOT NULL DEFAULT ''")
+        if "layout_version" not in supplier_columns:
+            connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_version INTEGER NOT NULL DEFAULT 0")
         now = utc_now()
         connection.execute(
             "INSERT OR IGNORE INTO organisations(id, name, created_at) VALUES(1, ?, ?)",

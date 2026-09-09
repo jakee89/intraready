@@ -7,6 +7,7 @@ import json
 import re
 import uuid
 import io
+import time
 from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -20,9 +21,9 @@ import pdfplumber
 from .config import APP_PASSWORD, APP_TITLE, BASE_DIR, EXPORT_DIR, MAX_UPLOAD_BYTES, SCHEMA_DIR, UPLOAD_DIR, ensure_directories
 from .db import connect, init_db, row, rows, transaction, utc_now
 from .exporter import csv_bytes, declaration_rows, inspect_schema, sha256, xml_bytes
-from .extractors import extract_invoice
+from .extractors import extract_invoice, layout_fingerprint, preview_saved_mapping
 from .cn_reference import cn_requirement, search_cn
-from .local_ai import rank_cn_candidates
+from .local_ai import ai_status, rank_cn_candidates
 from .rules import invoice_issues, readiness
 
 
@@ -59,8 +60,18 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.5.4", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.6.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
+
+
+@app.get("/api/ai/status")
+def local_ai_status():
+    return ai_status(False)
+
+
+@app.post("/api/ai/test")
+def test_local_ai():
+    return ai_status(True)
 
 
 @app.middleware("http")
@@ -376,6 +387,42 @@ def get_supplier_mapping(invoice_id: int):
             "regions": json.loads(profile.get("layout_mapping") or "[]") if profile else []}
 
 
+def _mapping_region_text(document: dict, region: dict) -> str:
+    with pdfplumber.open(UPLOAD_DIR / document["storage_name"]) as pdf:
+        page_number = max(1, int(region.get("page", 1)))
+        if page_number > len(pdf.pages):
+            raise HTTPException(422, "The selected page does not exist.")
+        page = pdf.pages[page_number - 1]
+        values = [max(0.0, min(1.0, float(region.get(key, 0)))) for key in ("x", "y", "width", "height")]
+        x, y, width, height = values
+        if width < .005 or height < .005:
+            raise HTTPException(422, "The box is too small. Drag around the complete value.")
+        box = (x * page.width, y * page.height, min(page.width, (x + width) * page.width), min(page.height, (y + height) * page.height))
+        return (page.crop(box).extract_text(x_tolerance=2, y_tolerance=3) or "").strip().replace("\n", " ")
+
+
+@app.post("/api/invoices/{invoice_id}/supplier-mapping/preview")
+async def preview_supplier_mapping(invoice_id: int, request: Request):
+    invoice = _invoice(invoice_id)
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    if not document:
+        raise HTTPException(422, "This invoice has no PDF.")
+    region = (await request.json()).get("region", {})
+    return {"text": _mapping_region_text(document, region)}
+
+
+@app.post("/api/invoices/{invoice_id}/supplier-mapping/preview-all")
+async def preview_all_supplier_mapping(invoice_id: int, request: Request):
+    invoice = _invoice(invoice_id)
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    if not document:
+        raise HTTPException(422, "This invoice has no PDF.")
+    regions = (await request.json()).get("regions", [])[:40]
+    draft = preview_saved_mapping(UPLOAD_DIR / document["storage_name"], regions)
+    return {"fields": {key: draft.get(key, "") for key in ("invoice_number", "invoice_date", "total_value", "supplier_name", "supplier_vat_number")},
+            "lines": draft.get("lines", [])[:50]}
+
+
 @app.put("/api/invoices/{invoice_id}/supplier-mapping")
 async def save_supplier_mapping(invoice_id: int, request: Request):
     invoice = _invoice(invoice_id)
@@ -392,21 +439,27 @@ async def save_supplier_mapping(invoice_id: int, request: Request):
         if values["width"] < .005 or values["height"] < .005:
             continue
         clean.append({"field": field, "page": max(1, int(region.get("page", 1))), **values})
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    if not document:
+        raise HTTPException(422, "This invoice has no PDF.")
+    unreadable = [item["field"] for item in clean if not _mapping_region_text(document, item)]
+    if unreadable:
+        raise HTTPException(422, "These boxes contain no readable PDF text: " + ", ".join(unreadable) + ". Redraw them around the printed value.")
+    fingerprint = layout_fingerprint(UPLOAD_DIR / document["storage_name"])
     with transaction() as connection:
         _remember_supplier(connection, invoice)
-        connection.execute("UPDATE supplier_profiles SET layout_mapping=?,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
-                           (json.dumps(clean), utc_now(), ORG_ID, supplier_vat))
+        connection.execute("UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=layout_version+1,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
+                           (json.dumps(clean), fingerprint, utc_now(), ORG_ID, supplier_vat))
         _record_event(connection, invoice_id, "supplier_mapping_saved", {"regions": len(clean)})
-    return {"saved": True, "regions": clean}
+    return {"saved": True, "regions": clean, "fingerprint": fingerprint}
 
 
 @app.post("/api/invoices/{invoice_id}/extract-again")
 def extract_again(invoice_id: int, use_ai: bool = False):
+    started = time.monotonic()
     invoice = _invoice(invoice_id)
     if invoice["status"] == "submitted":
         raise HTTPException(409, "Submitted invoices are locked.")
-    if any(item["reviewed"] for item in _lines(invoice_id)):
-        raise HTTPException(409, "Extraction cannot replace reviewed rows. Uncheck them first if you want to retry.")
     document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
     if not document:
         raise HTTPException(422, "This manual invoice has no PDF to extract.")
@@ -419,10 +472,17 @@ def extract_again(invoice_id: int, use_ai: bool = False):
     updates["notes"] = draft["notes"]
     now = utc_now()
     with transaction() as connection:
-        connection.execute("DELETE FROM invoice_lines WHERE invoice_id=?", (invoice_id,))
+        reviewed_lines = [item for item in _lines(invoice_id) if item["reviewed"]]
+        reviewed_keys = {(item["sku"].strip().upper(), item["description"].strip().upper()) for item in reviewed_lines}
+        connection.execute("DELETE FROM invoice_lines WHERE invoice_id=? AND reviewed=0", (invoice_id,))
         positions_to_ids = {}
         pending_links = []
-        for position, line in enumerate(draft["lines"], 1):
+        next_position = max((item["position"] for item in reviewed_lines), default=0)
+        for draft_position, line in enumerate(draft["lines"], 1):
+            if (line.get("sku", "").strip().upper(), line.get("description", "").strip().upper()) in reviewed_keys:
+                continue
+            next_position += 1
+            position = next_position
             requirement = cn_requirement(line.get("hs_code", ""))
             if requirement["supp_unit"] and not line.get("supp_unit"):
                 line["supp_unit"] = requirement["supp_unit"]
@@ -435,7 +495,7 @@ def extract_again(invoice_id: int, use_ai: bool = False):
                 f"INSERT INTO invoice_lines(invoice_id,position,{','.join(columns)},created_at,updated_at) VALUES(?,?,{','.join('?' for _ in columns)},?,?)",
                 (invoice_id, position, *(values[column] for column in columns), now, now),
             ).lastrowid
-            positions_to_ids[position] = line_id
+            positions_to_ids[draft_position] = line_id
             if line.get("linked_position"):
                 pending_links.append((line_id, line["linked_position"]))
         for line_id, linked_position in pending_links:
@@ -445,7 +505,15 @@ def extract_again(invoice_id: int, use_ai: bool = False):
         connection.execute("UPDATE documents SET extracted_text=?,extraction_method=? WHERE id=?", (extracted_text, draft["adapter"], document["id"]))
         _suggest_from_catalogue(connection, invoice_id)
         _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"]})
+        connection.execute("INSERT INTO extraction_runs(organisation_id,invoice_id,method,status,message,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
+                           (ORG_ID, invoice_id, draft["adapter"], "completed", draft["notes"][-1000:], round((time.monotonic()-started)*1000), now))
     return _payload(invoice_id)
+
+
+@app.get("/api/invoices/{invoice_id}/extraction-runs")
+def invoice_extraction_runs(invoice_id: int):
+    _invoice(invoice_id)
+    return rows("SELECT method,status,message,duration_ms,created_at FROM extraction_runs WHERE invoice_id=? ORDER BY id DESC LIMIT 20", (invoice_id,))
 
 
 @app.post("/api/invoices")

@@ -5,7 +5,7 @@ const state = {
   exports: [],
   declaration: null,
   pendingReviews: new Map(),
-  mapping: { regions: [], page: 1, pageCount: 1, documentId: null, start: null, draft: null },
+  mapping: { regions: [], page: 1, pageCount: 1, documentId: null, image: null, start: null, draft: null, pointerId: null },
   page: "dashboard",
 };
 
@@ -195,7 +195,7 @@ function renderReview() {
   const document = invoice.document;
   $("#reviewContent").innerHTML = `
     <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="extractAgainButton" class="button quiet" title="Use the local AI reader instead of the fast supplier reader; reviewed rows are protected">Use AI reader</button><button id="mapSupplierButton" class="button quiet" title="Teach the app where this supplier prints each field">Map supplier</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify and link printing, freight and other extracted charges">Prepare invoice</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="aiStatusButton" class="button quiet" title="Check that Ollama, the model and GPU are available">Check local AI</button><button id="extractAgainButton" class="button quiet" title="Use the local AI reader; confirmed rows are preserved">Use AI reader</button><button id="mapSupplierButton" class="button quiet" title="Teach the app where this supplier prints each field">Map supplier</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify and link printing, freight and other extracted charges">Prepare invoice</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
@@ -359,15 +359,42 @@ function mappingLabels() {
 
 function renderMappingBoxes() {
   const mapping = state.mapping;
+  const canvas = $("#mappingCanvas");
+  const context = canvas.getContext("2d");
+  if (!mapping.image || !mapping.image.complete || !mapping.image.naturalWidth) return;
+  if (canvas.width !== mapping.image.naturalWidth || canvas.height !== mapping.image.naturalHeight) {
+    canvas.width = mapping.image.naturalWidth; canvas.height = mapping.image.naturalHeight;
+  }
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(mapping.image, 0, 0, canvas.width, canvas.height);
   const labels = mappingLabels();
-  const visible = mapping.regions.filter(region => region.page === mapping.page).map(region => ({ ...region, drawing: false }));
-  $("#mappingOverlay").innerHTML = visible.map(region => `<div class="mapping-box saved" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("") + (mapping.start ? `<div class="mapping-start" style="left:${mapping.start.x*100}%;top:${mapping.start.y*100}%"></div>` : "");
+  const regions = mapping.regions.filter(region => region.page === mapping.page);
+  if (mapping.draft) regions.push(mapping.draft);
+  regions.forEach(region => {
+    const x = region.x * canvas.width, y = region.y * canvas.height;
+    const width = region.width * canvas.width, height = region.height * canvas.height;
+    context.save();
+    context.strokeStyle = "#e31b36"; context.fillStyle = "rgba(227,27,54,.18)";
+    context.lineWidth = Math.max(3, canvas.width / 350);
+    if (region === mapping.draft) context.setLineDash([12, 8]);
+    context.fillRect(x, y, width, height); context.strokeRect(x, y, width, height);
+    const label = labels[region.field] || region.field;
+    context.font = `bold ${Math.max(15, canvas.width / 65)}px sans-serif`;
+    const labelWidth = context.measureText(label).width + 14;
+    const labelY = Math.max(0, y - Math.max(22, canvas.width / 50));
+    context.fillStyle = "#e31b36"; context.fillRect(x, labelY, labelWidth, Math.max(22, canvas.width / 50));
+    context.fillStyle = "white"; context.fillText(label, x + 7, labelY + Math.max(16, canvas.width / 68));
+    context.restore();
+  });
 }
 
 function renderMapping() {
   const mapping = state.mapping;
   const imageUrl = `/api/documents/${mapping.documentId}/pages/${mapping.page}.png`;
-  if (!$("#mappingImage").src.endsWith(imageUrl)) $("#mappingImage").src = imageUrl;
+  const image = new Image();
+  mapping.image = image;
+  image.onload = () => { if (state.mapping.image === image) renderMappingBoxes(); };
+  image.src = imageUrl;
   $("#mappingPageLabel").textContent = `Page ${mapping.page} of ${mapping.pageCount}`;
   $("#mappingPrevious").disabled = mapping.page <= 1;
   $("#mappingNext").disabled = mapping.page >= mapping.pageCount;
@@ -379,8 +406,8 @@ function renderMapping() {
 async function openSupplierMapping() {
   try {
     const source = await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping`);
-    state.mapping = { regions: source.regions || [], page: 1, pageCount: source.page_count || 1, documentId: source.document_id, start: null, draft: null };
-    $("#mappingStatus").textContent = "Click the first corner";
+    state.mapping = { regions: source.regions || [], page: 1, pageCount: source.page_count || 1, documentId: source.document_id, image: null, start: null, draft: null, pointerId: null };
+    $("#mappingStatus").textContent = "Drag a box around the value";
     $("#supplierMapDialog").showModal(); renderMapping();
   } catch (error) { toast(error.message, "error"); }
 }
@@ -435,18 +462,36 @@ document.addEventListener("click", async event => {
     catch (error) { extractAgain.disabled = false; extractAgain.textContent = "Use AI reader"; toast(error.message, "error"); }
     return;
   }
+  if (event.target.closest("#aiStatusButton")) {
+    const button = event.target.closest("#aiStatusButton"); button.disabled = true; button.textContent = "Checking…";
+    try {
+      const status = await api("/api/ai/test", { method: "POST" });
+      button.textContent = status.ready && status.test_ok ? `AI ready · ${status.processor}` : "AI unavailable";
+      toast(status.ready && status.test_ok ? `Local AI works (${status.processor}, ${status.latency_ms} ms)` : (status.last_error || "The configured model is not ready"), status.ready && status.test_ok ? "" : "error");
+    } catch (error) { button.textContent = "AI unavailable"; toast(error.message, "error"); }
+    button.disabled = false; return;
+  }
   if (event.target.closest("#mapSupplierButton")) { openSupplierMapping(); return; }
   if (event.target.closest("[data-close-mapping]")) { $("#supplierMapDialog").close(); return; }
-  if (event.target.closest("#mappingPrevious")) { state.mapping.page--; state.mapping.start = null; renderMapping(); return; }
-  if (event.target.closest("#mappingNext")) { state.mapping.page++; state.mapping.start = null; renderMapping(); return; }
+  if (event.target.closest("#mappingPrevious")) { state.mapping.page--; state.mapping.start = null; state.mapping.draft = null; renderMapping(); return; }
+  if (event.target.closest("#mappingNext")) { state.mapping.page++; state.mapping.start = null; state.mapping.draft = null; renderMapping(); return; }
   if (event.target.closest("#mappingUndo")) { state.mapping.regions.pop(); renderMapping(); return; }
-  if (event.target.closest("#mappingClear")) { state.mapping.regions = []; state.mapping.start = null; $("#mappingStatus").textContent = "Click the first corner"; renderMapping(); return; }
+  if (event.target.closest("#mappingClear")) { state.mapping.regions = []; state.mapping.start = null; state.mapping.draft = null; $("#mappingStatus").textContent = "Drag a box around the value"; renderMapping(); return; }
   const removeRegion = event.target.closest("[data-remove-region]");
   if (removeRegion) { state.mapping.regions.splice(Number(removeRegion.dataset.removeRegion), 1); renderMapping(); return; }
   if (event.target.closest("#saveMappingButton")) {
     try {
       await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping`, { method: "PUT", body: JSON.stringify({ regions: state.mapping.regions }) });
       $("#supplierMapDialog").close(); toast("Supplier map saved — future invoices will use it before AI");
+    } catch (error) { toast(error.message, "error"); }
+    return;
+  }
+  if (event.target.closest("#previewMappingButton")) {
+    try {
+      const preview = await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping/preview-all`, { method: "POST", body: JSON.stringify({ regions: state.mapping.regions }) });
+      const fields = Object.entries(preview.fields).filter(([, value]) => value).map(([key, value]) => `${mappingLabels()[key] || key}: ${value}`).join(" · ");
+      const lines = preview.lines.map(line => escapeHtml(`${line.sku || "No SKU"} — ${line.description} — ${line.quantity || "?"} × ${line.invoice_value || "?"}`)).join("<br>");
+      $("#mappingPreview").innerHTML = `<strong>Preview:</strong> ${escapeHtml(fields || "No fixed fields read")}${lines ? `<hr>${lines}` : "<br>No complete rows yet. Map description, quantity and line total columns."}`;
     } catch (error) { toast(error.message, "error"); }
     return;
   }
@@ -544,7 +589,7 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", event => {
-  if (event.target.matches("#mappingField")) { state.mapping.start = null; $("#mappingStatus").textContent = "Click the first corner"; renderMappingBoxes(); return; }
+  if (event.target.matches("#mappingField")) { state.mapping.start = null; state.mapping.draft = null; $("#mappingStatus").textContent = "Drag a box around the value"; renderMappingBoxes(); return; }
   if (event.target.matches("[data-review-line]")) {
     const id = Number(event.target.dataset.reviewLine);
     state.pendingReviews.set(id, event.target.checked);
@@ -611,33 +656,50 @@ const dropZone = $("#uploadZone");
 ["dragleave", "drop"].forEach(name => dropZone.addEventListener(name, event => { event.preventDefault(); dropZone.classList.remove("dragging"); }));
 dropZone.addEventListener("drop", event => processFiles(event.dataTransfer.files));
 
-const mappingOverlay = $("#mappingOverlay");
+const mappingOverlay = $("#mappingCanvas");
 function mappingPoint(event) {
   const box = mappingOverlay.getBoundingClientRect();
   return { x: Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)), y: Math.max(0, Math.min(1, (event.clientY - box.top) / box.height)) };
 }
-mappingOverlay.addEventListener("click", event => {
+mappingOverlay.addEventListener("pointerdown", event => {
   event.preventDefault();
-  const point = mappingPoint(event);
-  if (!state.mapping.start) {
-    state.mapping.start = point;
-    $("#mappingStatus").textContent = "Now click the opposite corner";
-    renderMappingBoxes();
-    return;
-  }
-  const start = state.mapping.start;
-  const region = { field: $("#mappingField").value, page: state.mapping.page,
+  mappingOverlay.setPointerCapture(event.pointerId);
+  state.mapping.pointerId = event.pointerId;
+  state.mapping.start = mappingPoint(event);
+  state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page, x: state.mapping.start.x, y: state.mapping.start.y, width: 0, height: 0 };
+  $("#mappingStatus").textContent = "Keep dragging to size the red box";
+  renderMappingBoxes();
+});
+mappingOverlay.addEventListener("pointermove", event => {
+  if (state.mapping.pointerId !== event.pointerId || !state.mapping.start) return;
+  const point = mappingPoint(event), start = state.mapping.start;
+  state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
     x: Math.min(start.x, point.x), y: Math.min(start.y, point.y),
     width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
+  renderMappingBoxes();
+});
+mappingOverlay.addEventListener("pointerup", async event => {
+  if (state.mapping.pointerId !== event.pointerId || !state.mapping.start) return;
+  event.preventDefault();
+  const region = state.mapping.draft;
+  state.mapping.pointerId = null;
+  state.mapping.start = null;
+  state.mapping.draft = null;
+  try { mappingOverlay.releasePointerCapture(event.pointerId); } catch (_) {}
   if (region.width > .005 && region.height > .005) {
     if (!region.field.startsWith("line_")) state.mapping.regions = state.mapping.regions.filter(saved => saved.field !== region.field);
     state.mapping.regions.push(region);
+    $("#mappingStatus").textContent = "Box saved — check the preview below";
+    try {
+      const preview = await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping/preview`, { method: "POST", body: JSON.stringify({ region }) });
+      $("#mappingPreview").innerHTML = `<strong>${escapeHtml(mappingLabels()[region.field] || region.field)}:</strong> ${escapeHtml(preview.text || "No readable text inside this box — redraw it.")}`;
+    } catch (error) { $("#mappingPreview").textContent = error.message; }
+  } else {
+    $("#mappingStatus").textContent = "Box was too small — drag around the complete value";
   }
-  state.mapping.start = null;
-  $("#mappingStatus").textContent = "Saved locally — choose another field or save the map";
   renderMapping();
 });
-$("#mappingImage").addEventListener("load", renderMappingBoxes);
+mappingOverlay.addEventListener("pointercancel", () => { state.mapping.pointerId = null; state.mapping.start = null; state.mapping.draft = null; renderMappingBoxes(); });
 
 document.addEventListener("keydown", event => {
   const opener = event.target.closest?.("[data-open-invoice]");

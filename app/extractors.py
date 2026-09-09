@@ -26,6 +26,18 @@ COUNTRY_NAMES = {
 }
 
 
+def layout_fingerprint(path: Path) -> str:
+    """Stable enough to detect a supplier layout while ignoring invoice values."""
+    try:
+        with pdfplumber.open(path) as pdf:
+            parts = [f"{round(page.width)}x{round(page.height)}" for page in pdf.pages]
+            text = " ".join((page.extract_text() or "")[:3000] for page in pdf.pages[:2]).upper()
+        words = re.findall(r"[A-Z]{3,}", text)[:120]
+        return hashlib.sha256(("|".join(parts + words)).encode()).hexdigest()[:20]
+    except Exception:
+        return ""
+
+
 def _vision_pages(path: Path, maximum: int = 6) -> list[str]:
     images = []
     try:
@@ -115,7 +127,9 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
     for item in extracted.get("lines", []):
         if not isinstance(item, dict) or not str(item.get("description", "")).strip():
             continue
-        kind = item.get("line_kind") if item.get("line_kind") in {"goods", "charge"} else "goods"
+        ai_kind = item.get("line_kind")
+        kind = {"freight": "charge_stat", "insurance": "charge_stat", "discount": "charge_invoice",
+                "tax": "excluded", "service": "excluded", "charge": "charge"}.get(ai_kind, "goods")
         quantity = _money(str(item.get("quantity", "")))
         unit_mass = _money(str(item.get("unit_net_mass", "")))
         total_mass = _money(str(item.get("net_mass", "")))
@@ -136,7 +150,7 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
             "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "",
             "line_kind": kind, "reviewed": False,
             "source_page": item.get("source_page") if isinstance(item.get("source_page"), int) else 1,
-            "confidence": "local-ai", "notes": "Verify against the source PDF.",
+            "confidence": "local-ai", "notes": (f"Barcode/EAN: {item.get('barcode')}. " if item.get("barcode") else "") + "Verify against the source PDF.",
         })
     if lines:
         goods_positions = [index + 1 for index, line in enumerate(lines) if line["line_kind"] == "goods"]
@@ -152,6 +166,40 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
         draft["lines"] = lines
         draft["adapter"] = "local-ai"
         draft["notes"] += " Local AI created review suggestions; none are approved automatically."
+    return draft
+
+
+def _validate_and_normalise(draft: dict) -> dict:
+    warnings = []
+    for line in draft.get("lines", []):
+        description = line.get("description", "")
+        if re.search(r"(?i)\b(?:freight|transport|shipping|carriage|delivery cost)\b", description):
+            line["line_kind"] = "charge_stat"
+        elif re.search(r"(?i)\b(?:print|printing|engraving|logo|personalisation|decoration|setup|set-up|handling|packaging)\b", description) and line.get("line_kind") != "goods":
+            line["line_kind"] = "charge_invoice"
+        elif re.search(r"(?i)\b(?:vat|tax)\b", description) and line.get("line_kind") != "goods":
+            line["line_kind"] = "excluded"
+        quantity, unit_mass = line.get("quantity", ""), line.get("unit_net_mass", "")
+        if quantity and unit_mass and not line.get("net_mass"):
+            try:
+                line["net_mass"] = format(Decimal(quantity) * Decimal(unit_mass), "f")
+            except InvalidOperation:
+                pass
+        sku_digits = re.sub(r"\D", "", line.get("sku", ""))
+        if len(sku_digits) in {12, 13, 14} and not re.search(r"[A-Z]", line.get("sku", ""), re.I):
+            warnings.append(f"Row '{description[:35]}' may contain an EAN/barcode instead of a supplier SKU.")
+        code = re.sub(r"\D", "", line.get("hs_code", ""))
+        if code and len(code) != 8:
+            warnings.append(f"Row '{description[:35]}' has a CN code that is not 8 digits.")
+    try:
+        declared = Decimal(draft.get("total_value") or "0")
+        lines_total = sum((Decimal(line.get("invoice_value") or "0") for line in draft.get("lines", []) if line.get("line_kind") != "excluded"), Decimal("0"))
+        if declared and lines_total and abs(declared - lines_total) > Decimal("0.05"):
+            warnings.append(f"Extracted line values total {lines_total} but the invoice total is {declared}.")
+    except InvalidOperation:
+        warnings.append("One or more extracted amounts could not be validated.")
+    if warnings:
+        draft["notes"] += " Checks: " + " ".join(warnings)
     return draft
 
 
@@ -259,6 +307,13 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
         draft["adapter"] = "manual-map"
         draft["notes"] += " Saved visual supplier mapping was used; AI was skipped."
     return draft
+
+
+def preview_saved_mapping(path: Path, regions: list[dict]) -> dict:
+    with pdfplumber.open(path) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        draft = _base_draft(path.name, text, len(pdf.pages))
+    return _parse_saved_mapping(path, draft, {"layout_mapping": json.dumps(regions)})
 
 
 def _parse_common_tables(draft: dict, tables: list[list[list[str | None]]], text: str) -> dict:
@@ -489,7 +544,9 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
                 _apply_supplier_defaults(draft, matched_profile)
         elif ai_message:
             draft["notes"] += " " + ai_message
-    elif matched_profile and matched_profile.get("layout_mapping"):
+    elif matched_profile and matched_profile.get("layout_mapping") and (
+        not matched_profile.get("layout_fingerprint") or matched_profile.get("layout_fingerprint") == layout_fingerprint(path)
+    ):
         draft = _parse_saved_mapping(path, draft, matched_profile)
         if not draft["lines"]:
             marked_text = "\n".join(f"--- PAGE {index} ---\n{text}" for index, text in enumerate(page_texts, 1))
@@ -524,6 +581,7 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
         draft["notes"] += " One or more pages were read with local OCR."
         if draft["adapter"] == "general":
             draft["adapter"] = "ocr"
+    draft = _validate_and_normalise(draft)
     if not draft["lines"]:
         draft["notes"] += " No reliable goods table was detected; add lines manually."
     if any(not page.strip() for page in page_texts):

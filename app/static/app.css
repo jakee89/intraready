@@ -250,13 +250,9 @@ select:focus, input:focus, textarea:focus { border-color: var(--teal); }
 .mapping-modal { width: min(1180px, calc(100vw - 30px)); padding: 22px; overflow: auto; }
 .mapping-toolbar { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin: 14px 0; }
 .mapping-toolbar select { min-width: 220px; }
-.mapping-canvas { position: relative; isolation: isolate; width: min(100%, 900px); margin: auto; background: #e8ecea; user-select: none; }
-.mapping-canvas img { position: relative; z-index: 1; display: block; width: 100%; height: auto; pointer-events: none; }
-#mappingOverlay { position: absolute; z-index: 50; display: block; inset: 0; cursor: crosshair; touch-action: none; }
-.mapping-box { position: absolute; box-sizing: border-box; border: 4px solid #df1f32 !important; background: rgba(223,31,50,.20) !important; box-shadow: 0 0 0 1px white, 0 0 10px rgba(223,31,50,.55); pointer-events: none; }
-.mapping-box.drawing { border-style: dashed !important; background: rgba(255,32,54,.32) !important; }
-.mapping-box span { position: absolute; left: -4px; bottom: 100%; padding: 3px 7px; color: white; background: #df1f32 !important; font-size: .7rem; font-weight: 800; white-space: nowrap; }
-.mapping-start { position: absolute; width: 18px; height: 18px; border: 4px solid white; border-radius: 50%; background: #df1f32; box-shadow: 0 0 0 3px #df1f32; transform: translate(-50%,-50%); pointer-events: none; }
+.mapping-canvas { width: min(100%, 1050px); margin: auto; overflow: auto; background: #e8ecea; user-select: none; }
+#mappingCanvas { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: none; background: white; }
+.mapping-preview { width: min(100%, 1050px); box-sizing: border-box; margin: 10px auto 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 10px; background: #f7faf8; color: var(--muted); }
 .mapping-region-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .toast-region { position: fixed; z-index: 100; right: 22px; bottom: 22px; display: grid; gap: 9px; }
 .toast { width: min(360px, calc(100vw - 44px)); padding: 13px 15px; border-radius: 12px; color: white; background: #213b36; box-shadow: var(--shadow); animation: toastIn .2s ease-out; }
