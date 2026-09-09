@@ -361,8 +361,7 @@ function renderMappingBoxes() {
   const mapping = state.mapping;
   const labels = mappingLabels();
   const visible = mapping.regions.filter(region => region.page === mapping.page).map(region => ({ ...region, drawing: false }));
-  if (mapping.draft) visible.push({ ...mapping.draft, drawing: true });
-  $("#mappingOverlay").innerHTML = visible.map(region => `<div class="mapping-box ${region.drawing ? "drawing" : "saved"}" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("");
+  $("#mappingOverlay").innerHTML = visible.map(region => `<div class="mapping-box saved" style="left:${region.x*100}%;top:${region.y*100}%;width:${region.width*100}%;height:${region.height*100}%"><span>${escapeHtml(labels[region.field] || region.field)}</span></div>`).join("") + (mapping.start ? `<div class="mapping-start" style="left:${mapping.start.x*100}%;top:${mapping.start.y*100}%"></div>` : "");
 }
 
 function renderMapping() {
@@ -381,6 +380,7 @@ async function openSupplierMapping() {
   try {
     const source = await api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping`);
     state.mapping = { regions: source.regions || [], page: 1, pageCount: source.page_count || 1, documentId: source.document_id, start: null, draft: null };
+    $("#mappingStatus").textContent = "Click the first corner";
     $("#supplierMapDialog").showModal(); renderMapping();
   } catch (error) { toast(error.message, "error"); }
 }
@@ -437,10 +437,10 @@ document.addEventListener("click", async event => {
   }
   if (event.target.closest("#mapSupplierButton")) { openSupplierMapping(); return; }
   if (event.target.closest("[data-close-mapping]")) { $("#supplierMapDialog").close(); return; }
-  if (event.target.closest("#mappingPrevious")) { state.mapping.page--; renderMapping(); return; }
-  if (event.target.closest("#mappingNext")) { state.mapping.page++; renderMapping(); return; }
+  if (event.target.closest("#mappingPrevious")) { state.mapping.page--; state.mapping.start = null; renderMapping(); return; }
+  if (event.target.closest("#mappingNext")) { state.mapping.page++; state.mapping.start = null; renderMapping(); return; }
   if (event.target.closest("#mappingUndo")) { state.mapping.regions.pop(); renderMapping(); return; }
-  if (event.target.closest("#mappingClear")) { state.mapping.regions = []; renderMapping(); return; }
+  if (event.target.closest("#mappingClear")) { state.mapping.regions = []; state.mapping.start = null; $("#mappingStatus").textContent = "Click the first corner"; renderMapping(); return; }
   const removeRegion = event.target.closest("[data-remove-region]");
   if (removeRegion) { state.mapping.regions.splice(Number(removeRegion.dataset.removeRegion), 1); renderMapping(); return; }
   if (event.target.closest("#saveMappingButton")) {
@@ -544,6 +544,7 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.matches("#mappingField")) { state.mapping.start = null; $("#mappingStatus").textContent = "Click the first corner"; renderMappingBoxes(); return; }
   if (event.target.matches("[data-review-line]")) {
     const id = Number(event.target.dataset.reviewLine);
     state.pendingReviews.set(id, event.target.checked);
@@ -615,29 +616,27 @@ function mappingPoint(event) {
   const box = mappingOverlay.getBoundingClientRect();
   return { x: Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)), y: Math.max(0, Math.min(1, (event.clientY - box.top) / box.height)) };
 }
-mappingOverlay.addEventListener("mousedown", event => {
+mappingOverlay.addEventListener("click", event => {
   event.preventDefault();
-  state.mapping.start = mappingPoint(event);
-  state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
-    x: state.mapping.start.x, y: state.mapping.start.y, width: 0, height: 0 };
-});
-document.addEventListener("mousemove", event => {
-  if (!state.mapping.start) return;
-  event.preventDefault();
-  const point = mappingPoint(event), start = state.mapping.start;
-  state.mapping.draft = { field: $("#mappingField").value, page: state.mapping.page,
+  const point = mappingPoint(event);
+  if (!state.mapping.start) {
+    state.mapping.start = point;
+    $("#mappingStatus").textContent = "Now click the opposite corner";
+    renderMappingBoxes();
+    return;
+  }
+  const start = state.mapping.start;
+  const region = { field: $("#mappingField").value, page: state.mapping.page,
     x: Math.min(start.x, point.x), y: Math.min(start.y, point.y),
     width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
-  renderMappingBoxes();
-});
-function finishMappingDrag() {
-  if (state.mapping.draft?.width > .005 && state.mapping.draft?.height > .005) {
-    if (!state.mapping.draft.field.startsWith("line_")) state.mapping.regions = state.mapping.regions.filter(region => region.field !== state.mapping.draft.field);
-    state.mapping.regions.push(state.mapping.draft);
+  if (region.width > .005 && region.height > .005) {
+    if (!region.field.startsWith("line_")) state.mapping.regions = state.mapping.regions.filter(saved => saved.field !== region.field);
+    state.mapping.regions.push(region);
   }
-  state.mapping.start = null; state.mapping.draft = null; renderMapping();
-}
-document.addEventListener("mouseup", () => { if (state.mapping.start) finishMappingDrag(); });
+  state.mapping.start = null;
+  $("#mappingStatus").textContent = "Saved locally — choose another field or save the map";
+  renderMapping();
+});
 $("#mappingImage").addEventListener("load", renderMappingBoxes);
 
 document.addEventListener("keydown", event => {
