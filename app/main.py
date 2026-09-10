@@ -9,7 +9,7 @@ import io
 import time
 from contextlib import asynccontextmanager
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.11.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.12.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -444,7 +444,14 @@ def _invoice(invoice_id: int) -> dict:
 
 
 def _lines(invoice_id: int) -> list[dict]:
-    return rows("SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY position", (invoice_id,))
+    invoice_lines = rows("SELECT * FROM invoice_lines WHERE invoice_id = ? ORDER BY position", (invoice_id,))
+    allocations = rows("SELECT charge_line_id,goods_line_id,amount FROM charge_allocations WHERE invoice_id=?", (invoice_id,))
+    by_charge: dict[int, list[dict]] = {}
+    for allocation in allocations:
+        by_charge.setdefault(allocation["charge_line_id"], []).append(allocation)
+    for line in invoice_lines:
+        line["allocations"] = by_charge.get(line["id"], [])
+    return invoice_lines
 
 
 def _payload(invoice_id: int) -> dict:
@@ -470,9 +477,13 @@ def _preparation_summary(lines_list: list[dict]) -> dict:
         statistical_value = Decimal(str(line.get("statistical_value") or line.get("invoice_value") or "0"))
         included = []
         for charge in lines_list:
-            if charge.get("linked_line_id") != line.get("id"):
+            saved = charge.get("allocations") or []
+            allocation = next((item for item in saved if item["goods_line_id"] == line.get("id")), None)
+            if saved and not allocation:
                 continue
-            amount = Decimal(str(charge.get("invoice_value") or "0"))
+            if not saved and charge.get("linked_line_id") != line.get("id"):
+                continue
+            amount = Decimal(str(allocation["amount"] if allocation else charge.get("invoice_value") or "0"))
             if charge.get("line_kind") == "charge_invoice":
                 invoice_value += amount
                 statistical_value += amount
@@ -486,6 +497,60 @@ def _preparation_summary(lines_list: list[dict]) -> dict:
             "net_mass": line.get("net_mass", ""), "consignment_country": line.get("consignment_country", ""), "included": included,
         })
     return {"rows": output, "prepared": bool(output) and all(not line.get("line_kind") == "charge" for line in lines_list)}
+
+
+def _allocation_preview(invoice_id: int, payload: dict) -> dict:
+    invoice_lines = _lines(invoice_id)
+    try:
+        charge_id = int(payload.get("charge_line_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Choose a charge row.")
+    charge = next((line for line in invoice_lines if line["id"] == charge_id and line["line_kind"] != "goods"), None)
+    if not charge:
+        raise HTTPException(422, "The selected charge row is unavailable.")
+    treatment = payload.get("treatment", "charge_invoice")
+    if treatment not in {"charge_invoice", "charge_stat", "excluded"}:
+        raise HTTPException(422, "Choose a valid charge treatment.")
+    amount = Decimal(str(charge.get("invoice_value") or "0"))
+    if treatment == "excluded":
+        return {"charge": charge, "treatment": treatment, "method": "excluded", "total": format(amount, "f"), "allocations": []}
+    if amount < 0:
+        raise HTTPException(422, "Negative charge allocation is not supported.")
+    goods = [line for line in invoice_lines if line["line_kind"] == "goods"]
+    if not goods:
+        raise HTTPException(422, "Add a goods row before allocating charges.")
+    method = payload.get("method", "value")
+    if method == "single":
+        try:
+            goods_id = int(payload.get("goods_line_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "Choose the goods row receiving this charge.")
+        goods = [line for line in goods if line["id"] == goods_id]
+        if not goods:
+            raise HTTPException(422, "The selected goods row is unavailable.")
+        weights = [Decimal("1")]
+    elif method in {"value", "weight", "quantity", "equal"}:
+        field = {"value": "invoice_value", "weight": "net_mass", "quantity": "quantity"}.get(method)
+        weights = [Decimal("1") if not field else max(Decimal("0"), Decimal(str(line.get(field) or "0"))) for line in goods]
+        if sum(weights) == 0:
+            raise HTTPException(422, f"Cannot allocate by {method}: goods rows have no usable {field.replace('_', ' ')} values.")
+    else:
+        raise HTTPException(422, "Choose a valid allocation method.")
+    weight_total = sum(weights)
+    rounded = [(amount * weight / weight_total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) for weight in weights]
+    if rounded:
+        rounded[-1] += amount - sum(rounded)
+    allocations = []
+    for line, share in zip(goods, rounded):
+        base_invoice = Decimal(str(line.get("invoice_value") or "0"))
+        base_stat = Decimal(str(line.get("statistical_value") or line.get("invoice_value") or "0"))
+        allocations.append({
+            "goods_line_id": line["id"], "sku": line.get("sku", ""), "description": line.get("description", ""),
+            "amount": format(share, "f"),
+            "invoice_after": format(base_invoice + (share if treatment == "charge_invoice" else Decimal("0")), "f"),
+            "stat_after": format(base_stat + share, "f"),
+        })
+    return {"charge": charge, "treatment": treatment, "method": method, "total": format(amount, "f"), "allocations": allocations}
 
 
 def _clean_value(field: str, value):
@@ -1129,6 +1194,8 @@ async def update_line(line_id: int, request: Request):
     if not updates:
         raise HTTPException(422, "No supported fields supplied")
     with transaction() as connection:
+        if "linked_line_id" in updates or "invoice_value" in updates or updates.get("line_kind") in {"goods", "excluded"}:
+            connection.execute("DELETE FROM charge_allocations WHERE charge_line_id=?", (line_id,))
         assignments = ", ".join(f"{field}=?" for field in updates)
         connection.execute(f"UPDATE invoice_lines SET {assignments},updated_at=? WHERE id=?", (*updates.values(), utc_now(), line_id))
         _invalidate(connection, found["invoice_id"], "line_updated", {"line_id": line_id, "fields": list(updates)})
@@ -1309,6 +1376,38 @@ def prepare_invoice(invoice_id: int):
                     assignments = ",".join(f"{field}=?" for field in updates)
                     connection.execute(f"UPDATE invoice_lines SET {assignments},updated_at=? WHERE id=?", (*updates.values(), utc_now(), line["id"]))
         _invalidate(connection, invoice_id, "invoice_prepared", {"method": "ai-assisted rules"})
+    return _payload(invoice_id)
+
+
+@app.post("/api/invoices/{invoice_id}/charge-allocation/preview")
+def preview_charge_allocation(invoice_id: int, payload: dict):
+    _invoice(invoice_id)
+    return _allocation_preview(invoice_id, payload)
+
+
+@app.post("/api/invoices/{invoice_id}/charge-allocation/apply")
+def apply_charge_allocation(invoice_id: int, payload: dict):
+    invoice = _invoice(invoice_id)
+    if invoice["status"] == "submitted":
+        raise HTTPException(409, "Submitted invoices are locked.")
+    preview = _allocation_preview(invoice_id, payload)
+    charge_id = preview["charge"]["id"]
+    with transaction() as connection:
+        connection.execute("DELETE FROM charge_allocations WHERE charge_line_id=?", (charge_id,))
+        for allocation in preview["allocations"]:
+            connection.execute(
+                "INSERT INTO charge_allocations(invoice_id,charge_line_id,goods_line_id,amount,created_at) VALUES(?,?,?,?,?)",
+                (invoice_id, charge_id, allocation["goods_line_id"], allocation["amount"], utc_now()),
+            )
+        linked = preview["allocations"][0]["goods_line_id"] if len(preview["allocations"]) == 1 else None
+        connection.execute(
+            "UPDATE invoice_lines SET line_kind=?,linked_line_id=?,reviewed=1,updated_at=? WHERE id=?",
+            (preview["treatment"], linked, utc_now(), charge_id),
+        )
+        _invalidate(connection, invoice_id, "charge_allocated", {
+            "charge_line_id": charge_id, "treatment": preview["treatment"],
+            "method": preview["method"], "allocations": preview["allocations"],
+        })
     return _payload(invoice_id)
 
 

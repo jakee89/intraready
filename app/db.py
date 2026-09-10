@@ -236,6 +236,16 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
     UNIQUE(invoice_id, position)
 );
 
+CREATE TABLE IF NOT EXISTS charge_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    charge_line_id INTEGER NOT NULL REFERENCES invoice_lines(id) ON DELETE CASCADE,
+    goods_line_id INTEGER NOT NULL REFERENCES invoice_lines(id) ON DELETE CASCADE,
+    amount TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(charge_line_id, goods_line_id)
+);
+
 CREATE TABLE IF NOT EXISTS product_facts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organisation_id INTEGER NOT NULL REFERENCES organisations(id),
@@ -325,6 +335,7 @@ CREATE TABLE IF NOT EXISTS export_snapshots (
 CREATE INDEX IF NOT EXISTS idx_invoices_arrival ON invoices(organisation_id, arrival_date);
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(organisation_id, status);
 CREATE INDEX IF NOT EXISTS idx_lines_invoice ON invoice_lines(invoice_id, position);
+CREATE INDEX IF NOT EXISTS idx_charge_allocations ON charge_allocations(invoice_id, charge_line_id);
 CREATE INDEX IF NOT EXISTS idx_products_lookup ON product_facts(organisation_id, supplier_vat, sku);
 CREATE INDEX IF NOT EXISTS idx_supplier_profiles ON supplier_profiles(organisation_id, supplier_vat);
 CREATE INDEX IF NOT EXISTS idx_supplier_templates ON supplier_template_versions(organisation_id, supplier_vat, version);

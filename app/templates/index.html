@@ -221,6 +221,21 @@
     </form>
   </dialog>
 
+  <dialog id="chargeAllocationDialog" class="modal allocation-modal">
+    <form id="chargeAllocationForm">
+      <div class="modal-head"><div><p class="eyebrow">CHARGE ASSISTANT</p><h2>Allocate invoice charges</h2></div><button class="icon-button" type="button" data-close-allocation aria-label="Close">×</button></div>
+      <p>Choose how one freight, printing or handling charge contributes to the goods. Nothing changes until you press Apply allocation.</p>
+      <div class="form-grid">
+        <label class="wide">Charge row<select name="charge_line_id" id="allocationCharge"></select></label>
+        <label>Treatment<select name="treatment" id="allocationTreatment"><option value="charge_invoice">Add to invoice and statistical value</option><option value="charge_stat">Add to statistical value only</option><option value="excluded">Exclude this service</option></select></label>
+        <label>Split method<select name="method" id="allocationMethod"><option value="value">By goods value</option><option value="weight">By net weight</option><option value="quantity">By quantity</option><option value="equal">Equal split</option><option value="single">One selected product</option></select></label>
+        <label class="wide" id="allocationTargetLabel" hidden>Product receiving charge<select name="goods_line_id" id="allocationTarget"></select></label>
+      </div>
+      <div id="allocationPreview" class="allocation-preview">Choose the settings, then preview the exact result.</div>
+      <div class="form-actions"><button class="button quiet" type="button" data-close-allocation>Cancel</button><button class="button secondary" type="button" id="previewAllocationButton">Preview</button><button class="button primary" type="submit" id="applyAllocationButton" disabled>Apply allocation</button></div>
+    </form>
+  </dialog>
+
   <dialog id="catalogueDialog" class="modal">
     <form id="catalogueForm" method="dialog">
       <div class="modal-head"><div><p class="eyebrow">PRODUCT MEMORY</p><h2>Add a verified product</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>

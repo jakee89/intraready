@@ -50,18 +50,17 @@ def declaration_rows(invoices: list[dict], lines_by_invoice: dict[int, list[dict
         invoice_lines = lines_by_invoice[invoice["id"]]
         charges_by_target: dict[int, dict[str, Decimal]] = {}
         for charge in invoice_lines:
-            if not charge["line_kind"].startswith("charge") or not charge.get("linked_line_id"):
+            if not charge["line_kind"].startswith("charge"):
                 continue
-            bucket = charges_by_target.setdefault(
-                charge["linked_line_id"],
-                {"invoice": Decimal("0"), "stat": Decimal("0")},
-            )
-            amount = Decimal(str(charge["invoice_value"] or "0"))
-            if charge["line_kind"] == "charge_invoice":
-                bucket["invoice"] += amount
-                bucket["stat"] += amount
-            elif charge["line_kind"] == "charge_stat":
-                bucket["stat"] += amount
+            allocations = charge.get("allocations") or ([{"goods_line_id": charge.get("linked_line_id"), "amount": charge["invoice_value"]}] if charge.get("linked_line_id") else [])
+            for allocation in allocations:
+                bucket = charges_by_target.setdefault(allocation["goods_line_id"], {"invoice": Decimal("0"), "stat": Decimal("0")})
+                amount = Decimal(str(allocation["amount"] or "0"))
+                if charge["line_kind"] == "charge_invoice":
+                    bucket["invoice"] += amount
+                    bucket["stat"] += amount
+                elif charge["line_kind"] == "charge_stat":
+                    bucket["stat"] += amount
         for line in invoice_lines:
             if line["line_kind"] != "goods":
                 continue

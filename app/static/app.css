@@ -282,6 +282,10 @@ select:focus, input:focus, textarea:focus { border-color: var(--teal); }
 .modal form { padding: 24px; }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
 .modal-head h2 { font-size: 1.45rem; }
+.allocation-modal { width: min(880px, calc(100vw - 30px)); }
+.allocation-preview { margin-top: 18px; padding: 14px; min-height: 72px; border: 1px solid var(--line); border-radius: 14px; background: #f7faf9; color: var(--muted); }
+.allocation-preview .data-table-wrap { max-height: 310px; }
+.allocation-note { margin: 10px 0 0; }
 .mapping-modal { width: min(1180px, calc(100vw - 30px)); padding: 22px; overflow: auto; }
 .mapping-toolbar { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin: 14px 0; }
 .mapping-toolbar select { min-width: 220px; }

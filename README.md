@@ -22,6 +22,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Separate supplier VAT country, origin country and consignment country
 - Row-level country of consignment for invoices containing orders shipped from different EU countries
 - Charge decisions: add to invoice value, statistical value only, or exclude
+- Charge allocation preview with value, weight, quantity, equal or single-product splitting
 - Exact reconciliation of goods/charges against the invoice total
 - Approval invalidation after edits or organisation-profile changes
 - Effective product memory keyed by supplier VAT and SKU

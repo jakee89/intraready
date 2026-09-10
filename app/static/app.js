@@ -5,6 +5,7 @@ const state = {
   exports: [],
   declaration: null,
   pendingReviews: new Map(),
+  allocationPreview: null,
   mapping: { regions: [], page: 1, pageCount: 1, documentId: null, image: null, start: null, draft: null, pointerId: null },
   page: "dashboard",
 };
@@ -268,7 +269,7 @@ function renderReview() {
   const document = invoice.document;
   $("#reviewContent").innerHTML = `
     <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="aiStatusButton" class="button quiet" title="Check the configured cloud invoice AI connection without processing this invoice">Check API AI</button><button id="extractAgainButton" class="button quiet" title="Send this PDF to API AI once and save its layout; confirmed rows are preserved">Learn layout with AI</button><button id="mapSupplierButton" class="button quiet" title="View, edit or restore this supplier's saved layouts">Supplier layout</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify and link printing, freight and other extracted charges">Prepare invoice</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="aiStatusButton" class="button quiet" title="Check the configured cloud invoice AI connection without processing this invoice">Check API AI</button><button id="extractAgainButton" class="button quiet" title="Send this PDF to API AI once and save its layout; confirmed rows are preserved">Learn layout with AI</button><button id="mapSupplierButton" class="button quiet" title="View, edit or restore this supplier's saved layouts">Supplier layout</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify obvious printing, freight and other extracted charges">Prepare invoice</button><button id="allocateChargesButton" class="button secondary" title="Preview and split freight, printing or handling charges across goods">Allocate charges</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
@@ -295,8 +296,9 @@ function lineRow(line, allLines, issueLines) {
   const goods = allLines.filter(item => item.line_kind === "goods");
   const rowClass = issueLines.has(line.id) ? "row-issue" : (line.reviewed ? "row-reviewed" : "");
   const charge = line.line_kind.startsWith("charge");
+  const splitCount = line.allocations?.length || 0;
   return `<tr id="line-${line.id}" class="${rowClass}" data-line-row="${line.id}" data-kind="${line.line_kind}" data-reviewed="${line.reviewed}" data-has-issue="${issueLines.has(line.id)}">
-    <td><select data-line-id="${line.id}" data-line-field="line_kind" title="How this source row is treated"><option value="goods" ${line.line_kind==="goods"?"selected":""}>Goods</option><option value="charge" ${line.line_kind==="charge"?"selected":""}>Charge · decide</option><option value="charge_invoice" ${line.line_kind==="charge_invoice"?"selected":""}>Add to invoice value</option><option value="charge_stat" ${line.line_kind==="charge_stat"?"selected":""}>Statistical only</option><option value="excluded" ${line.line_kind==="excluded"?"selected":""}>Excluded / service</option></select>${charge ? `<select data-line-id="${line.id}" data-line-field="linked_line_id" title="Goods row receiving this charge"><option value="">Link to goods…</option>${goods.map(g => `<option value="${g.id}" ${line.linked_line_id===g.id?"selected":""}>${escapeHtml(g.sku || g.description.slice(0,18))}</option>`).join("")}</select>` : `<span class="kind-tag ${line.line_kind}">${escapeHtml(line.confidence)}</span>`}</td>
+    <td><select data-line-id="${line.id}" data-line-field="line_kind" title="How this source row is treated"><option value="goods" ${line.line_kind==="goods"?"selected":""}>Goods</option><option value="charge" ${line.line_kind==="charge"?"selected":""}>Charge · decide</option><option value="charge_invoice" ${line.line_kind==="charge_invoice"?"selected":""}>Add to invoice value</option><option value="charge_stat" ${line.line_kind==="charge_stat"?"selected":""}>Statistical only</option><option value="excluded" ${line.line_kind==="excluded"?"selected":""}>Excluded / service</option></select>${charge ? (splitCount > 1 ? `<span class="kind-tag charge_invoice">Split across ${splitCount} goods</span>` : `<select data-line-id="${line.id}" data-line-field="linked_line_id" title="Goods row receiving this charge"><option value="">Link to goods…</option>${goods.map(g => `<option value="${g.id}" ${line.linked_line_id===g.id?"selected":""}>${escapeHtml(g.sku || g.description.slice(0,18))}</option>`).join("")}</select>`) : `<span class="kind-tag ${line.line_kind}">${escapeHtml(line.confidence)}</span>`}</td>
     <td><input class="description-input" data-line-id="${line.id}" data-line-field="description" value="${escapeHtml(line.description)}" title="Original description"><input data-line-id="${line.id}" data-line-field="sku" value="${escapeHtml(line.sku)}" placeholder="SKU" title="Supplier SKU"></td>
     <td><input data-line-id="${line.id}" data-line-field="quantity" value="${escapeHtml(line.quantity)}" inputmode="decimal"><small class="subline">${escapeHtml(line.unit)}</small></td>
     <td><input data-line-id="${line.id}" data-line-field="hs_code" value="${escapeHtml(line.hs_code)}" maxlength="8" inputmode="numeric" ${line.line_kind!=="goods"?"disabled":""}><small class="subline" title="Checked against the official 2026 CN list">${line.cn_reference?.supp_unit ? `Requires ${escapeHtml(line.cn_reference.supp_unit)}` : escapeHtml(line.raw_commodity_code)}</small></td>
@@ -425,6 +427,37 @@ function openLineDialog(lineId = null) {
   $("#lineDialog h2").textContent = line ? "Edit row details" : "Add a row";
   $("#saveLineButton").textContent = line ? "Save row" : "Add row";
   $("#lineDialog").showModal();
+}
+
+function openChargeAllocation() {
+  const lines = state.currentInvoice?.lines || [];
+  const charges = lines.filter(line => line.line_kind !== "goods" && line.invoice_value !== "");
+  const goods = lines.filter(line => line.line_kind === "goods");
+  if (!charges.length) { toast("No charge rows are available. Add or classify a freight, printing or handling row first.", "error"); return; }
+  if (!goods.length) { toast("Add at least one goods row before allocating charges.", "error"); return; }
+  $("#allocationCharge").innerHTML = charges.map(line => `<option value="${line.id}">${escapeHtml(line.description || "Charge")} · ${formatMoney(line.invoice_value, state.currentInvoice.currency)}</option>`).join("");
+  $("#allocationTarget").innerHTML = goods.map(line => `<option value="${line.id}">${escapeHtml(line.sku || line.description)}</option>`).join("");
+  state.allocationPreview = null;
+  $("#allocationPreview").textContent = "Choose the settings, then preview the exact result.";
+  $("#applyAllocationButton").disabled = true;
+  $("#allocationTargetLabel").hidden = $("#allocationMethod").value !== "single";
+  $("#chargeAllocationDialog").showModal();
+}
+
+function allocationRequest() {
+  const form = $("#chargeAllocationForm");
+  return Object.fromEntries(new FormData(form));
+}
+
+async function previewAllocation() {
+  try {
+    const preview = await api(`/api/invoices/${state.currentInvoice.id}/charge-allocation/preview`, { method: "POST", body: JSON.stringify(allocationRequest()) });
+    state.allocationPreview = preview;
+    $("#allocationPreview").innerHTML = preview.treatment === "excluded"
+      ? `<div class="allocation-note"><strong>${escapeHtml(preview.charge.description)}</strong> will be excluded from the Intrastat values.</div>`
+      : `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Product</th><th>Allocated</th><th>Invoice after</th><th>Stat after</th></tr></thead><tbody>${preview.allocations.map(item => `<tr><td><strong>${escapeHtml(item.sku || item.description)}</strong><span class="subline">${escapeHtml(item.description)}</span></td><td>${escapeHtml(item.amount)}</td><td>${escapeHtml(item.invoice_after)}</td><td>${escapeHtml(item.stat_after)}</td></tr>`).join("")}</tbody></table></div><p class="allocation-note">Total allocated: <strong>${escapeHtml(preview.total)}</strong>. Rounding remainder is included in the final row.</p>`;
+    $("#applyAllocationButton").disabled = false;
+  } catch (error) { state.allocationPreview = null; $("#applyAllocationButton").disabled = true; toast(error.message, "error"); }
 }
 
 async function loadExports() {
@@ -648,6 +681,9 @@ document.addEventListener("click", async event => {
     catch (error) { toast(error.message, "error"); }
     return;
   }
+  if (event.target.closest("#allocateChargesButton")) { openChargeAllocation(); return; }
+  if (event.target.closest("[data-close-allocation]")) { $("#chargeAllocationDialog").close(); return; }
+  if (event.target.closest("#previewAllocationButton")) { await previewAllocation(); return; }
   if (event.target.closest("#saveReviewedButton")) {
     const reviewed = [...state.pendingReviews].map(([id, value]) => ({ id, reviewed: value }));
     if (!reviewed.length) return;
@@ -733,6 +769,8 @@ document.addEventListener("change", event => {
     return;
   }
   if (event.target.matches("#mappingField")) { state.mapping.start = null; state.mapping.draft = null; $("#mappingStatus").textContent = "Drag a box around the value"; renderMappingBoxes(); return; }
+  if (event.target.matches("#allocationMethod")) $("#allocationTargetLabel").hidden = event.target.value !== "single";
+  if (event.target.closest("#chargeAllocationForm")) { state.allocationPreview = null; $("#applyAllocationButton").disabled = true; }
   if (event.target.matches("[data-review-line]")) {
     const id = Number(event.target.dataset.reviewLine);
     state.pendingReviews.set(id, event.target.checked);
@@ -770,6 +808,16 @@ $("#lineForm").addEventListener("submit", async event => {
   const method = lineId ? "PATCH" : "POST";
   try { state.currentInvoice = await api(endpoint, { method, body: JSON.stringify(body) }); $("#lineDialog").close(); await refreshBootstrap(); renderReview(); toast(lineId ? "Row saved" : "Row added"); }
   catch (error) { toast(error.message, "error"); }
+});
+
+$("#chargeAllocationForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!state.allocationPreview) { await previewAllocation(); return; }
+  try {
+    state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/charge-allocation/apply`, { method: "POST", body: JSON.stringify(allocationRequest()) });
+    $("#chargeAllocationDialog").close();
+    await refreshBootstrap(); renderReview(); toast("Charge allocation applied");
+  } catch (error) { toast(error.message, "error"); }
 });
 
 $("#lineForm").addEventListener("input", event => {
