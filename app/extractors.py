@@ -134,7 +134,7 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
             "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "",
             "line_kind": kind, "reviewed": False,
             "source_page": item.get("source_page") if isinstance(item.get("source_page"), int) else 1,
-            "confidence": "api-ai", "notes": (f"Barcode/EAN: {item.get('barcode')}. " if item.get("barcode") else "") + "Verify against the source PDF.",
+            "confidence": "api-ai", "notes": (f"Product code: {item.get('product_code')}. " if item.get("product_code") else "") + (f"Barcode/EAN: {item.get('barcode')}. " if item.get("barcode") else "") + "Verify against the source PDF.",
         })
     if lines:
         goods_positions = [index + 1 for index, line in enumerate(lines) if line["line_kind"] == "goods"]
@@ -235,6 +235,24 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
         return draft
     columns: dict[str, list[dict]] = {}
     with pdfplumber.open(path) as pdf:
+        semantic_item_refs: list[dict] = []
+        for page_number, page in enumerate(pdf.pages, 1):
+            words = page.extract_words(x_tolerance=2, y_tolerance=3)
+            for index, word in enumerate(words):
+                if word["text"].strip().lower() != "item":
+                    continue
+                same_row = [candidate for candidate in words if abs(float(candidate["top"]) - float(word["top"])) < 4]
+                ref = next((candidate for candidate in same_row if candidate["x0"] > word["x0"] and re.fullmatch(r"ref\.?", candidate["text"], re.I)), None)
+                product = next((candidate for candidate in same_row if candidate["x0"] > (ref or word)["x1"] and candidate["text"].lower() == "product"), None)
+                if not ref or not product:
+                    continue
+                left, right, below = max(0, float(word["x0"]) - 4), float(product["x0"]) - 3, float(word["bottom"]) + 2
+                candidates = [candidate for candidate in words if left <= float(candidate["x0"]) < right and float(candidate["top"]) >= below]
+                for candidate in candidates:
+                    value = candidate["text"].strip()
+                    if re.fullmatch(r"(?=.*\d)[A-Z0-9][A-Z0-9./-]{3,}", value, re.I):
+                        semantic_item_refs.append({"page": page_number, "y": float(candidate["top"]) / page.height, "text": value})
+                break
         for region in regions:
             page_number = int(region.get("page", 1))
             if page_number < 1 or page_number > len(pdf.pages):
@@ -248,12 +266,12 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
                 grouped: list[dict] = []
                 for word in crop.extract_words(x_tolerance=2, y_tolerance=3):
                     relative_y = float(word["top"]) / page.height
-                    existing = next((item for item in grouped if abs(item["y"] - relative_y) < 0.006), None)
+                    existing = next((item for item in grouped if item.get("page") == page_number and abs(item["y"] - relative_y) < 0.006), None)
                     if existing:
                         existing["text"] += " " + word["text"]
                     else:
-                        grouped.append({"y": relative_y, "text": word["text"]})
-                columns[field[5:]] = grouped
+                        grouped.append({"page": page_number, "y": relative_y, "text": word["text"]})
+                columns.setdefault(field[5:], []).extend(grouped)
             else:
                 value = (crop.extract_text(x_tolerance=2, y_tolerance=2) or "").strip().replace("\n", " ")
                 if not value:
@@ -266,13 +284,17 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
                     value = value.upper()
                 if field in draft and value:
                     draft[field] = value
+        # “Item Ref.” is the supplier SKU. A distinct “Product Code” column is an order/configuration code.
+        if semantic_item_refs:
+            columns["sku"] = semantic_item_refs
     anchors = columns.get("invoice_value") or columns.get("quantity") or columns.get("sku") or []
     parsed = []
     last_goods_position = None
     for anchor in anchors:
         values = {}
         for field, entries in columns.items():
-            nearest = min(entries, key=lambda item: abs(item["y"] - anchor["y"]), default=None)
+            same_page = [item for item in entries if item.get("page", anchor.get("page", 1)) == anchor.get("page", 1)]
+            nearest = min(same_page, key=lambda item: abs(item["y"] - anchor["y"]), default=None)
             values[field] = nearest["text"].strip() if nearest and abs(nearest["y"] - anchor["y"]) < 0.018 else ""
         description = values.get("description", "")
         amount = _money(values.get("invoice_value", ""))
@@ -295,7 +317,7 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
             "raw_commodity_code": raw_code, "hs_code": raw_code[:8], "origin_country": values.get("origin_country", "").upper(),
             "invoice_value": amount, "statistical_value": amount, "unit_net_mass": unit_mass, "net_mass": total_mass,
             "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "", "line_kind": kind, "reviewed": False,
-            "source_page": 1, "confidence": "manual-map", "notes": "Extracted with the saved supplier map; verify this row.",
+            "source_page": anchor.get("page", 1), "confidence": "manual-map", "notes": "Extracted with the saved supplier map; verify this row.",
         })
         if kind == "goods":
             last_goods_position = len(parsed)
