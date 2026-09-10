@@ -20,6 +20,7 @@
         <button class="nav-item active" data-nav="dashboard"><span class="nav-icon">⌂</span>Overview</button>
         <button class="nav-item" data-nav="upload"><span class="nav-icon">↑</span>Upload invoices</button>
         <button class="nav-item" data-nav="invoices"><span class="nav-icon">▤</span>Invoices <span id="reviewBadge" class="nav-badge hidden">0</span></button>
+        <button class="nav-item" data-nav="suppliers"><span class="nav-icon">◎</span>Suppliers</button>
         <button class="nav-item" data-nav="catalogue"><span class="nav-icon">◇</span>Product memory</button>
         <button class="nav-item" data-nav="declarations"><span class="nav-icon">↗</span>Declarations</button>
       </nav>
@@ -103,6 +104,11 @@
           <div class="page-intro compact"><div><p class="eyebrow">PRODUCT MEMORY</p><h2>Verified product facts</h2><p>Reuse trusted commodity codes and unit weights for recurring products.</p></div><button id="addCatalogueButton" class="button primary">Add product</button></div>
           <article class="info-card slim"><span class="info-icon">i</span><div><strong>Suggestions remain visible</strong><p>A saved fact fills future gaps, but it does not silently overwrite new invoice evidence. Origin may change between batches.</p></div></article>
           <div class="panel table-panel"><div id="catalogueTable"></div></div>
+        </section>
+
+        <section class="page" data-page="suppliers">
+          <div class="page-intro compact"><div><p class="eyebrow">LAYOUT LIBRARY</p><h2>Suppliers</h2><p>See what IntraReady remembers, how each invoice was processed and which layout version is active.</p></div><button id="refreshSuppliersButton" class="button secondary">Refresh</button></div>
+          <div id="supplierCentre"><div class="panel loading"></div></div>
         </section>
 
         <section class="page" data-page="declarations">

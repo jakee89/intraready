@@ -43,6 +43,24 @@ class AuthenticationApiTests(unittest.TestCase):
         self.assertEqual(ai_saved.status_code, 200, ai_saved.text)
         self.assertNotIn("sk-test-key", ai_saved.text)
         self.assertEqual(self.client.get("/api/ai/settings").json()["config"]["key_source"], "app")
+        now = db.utc_now()
+        with db.transaction() as connection:
+            supplier_id = connection.execute(
+                """INSERT INTO supplier_profiles(organisation_id,supplier_vat,supplier_name,layout_version,created_at,updated_at)
+                   VALUES(1,'PT123456789','Example Supplier',2,?,?)""", (now, now),
+            ).lastrowid
+            first_template = connection.execute(
+                """INSERT INTO supplier_template_versions(organisation_id,supplier_vat,version,layout_fingerprint,layout_mapping,source,active,created_at)
+                   VALUES(1,'PT123456789',1,'old','[{"field":"invoice_number","page":1,"x":0.1,"y":0.1,"width":0.1,"height":0.1}]','manual',0,?)""", (now,),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO supplier_template_versions(organisation_id,supplier_vat,version,layout_fingerprint,layout_mapping,source,active,created_at)
+                   VALUES(1,'PT123456789',2,'new','[{"field":"line_sku","page":1,"x":0.1,"y":0.1,"width":0.1,"height":0.5}]','api-ai',1,?)""", (now,),
+            )
+        self.assertEqual(self.client.get("/api/suppliers").json()[0]["template_count"], 2)
+        self.assertEqual(self.client.get(f"/api/suppliers/{supplier_id}").json()["templates"][0]["fields"], ["line_sku"])
+        restored = self.client.post(f"/api/suppliers/{supplier_id}/templates/{first_template}/activate", headers={"X-CSRF-Token": csrf})
+        self.assertEqual(restored.json()["active_version"], 1)
         self.assertEqual(self.client.post("/api/admin/accounts", json={}).status_code, 403)
         account = self.client.post(
             "/api/admin/accounts", headers={"X-CSRF-Token": csrf},

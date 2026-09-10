@@ -15,6 +15,7 @@ const titles = {
   catalogue: ["LIBRARY", "Product memory"], declarations: ["EXPORT", "Declarations"],
   settings: ["CONFIGURATION", "Organisation"], guide: ["HELP", "How it works"],
   admin: ["PLATFORM", "Administration"],
+  suppliers: ["LIBRARY", "Suppliers and layouts"],
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -99,6 +100,7 @@ function navigate(page, options = {}) {
   history.replaceState(null, "", `#${page}`);
   if (!options.preserveScroll) window.scrollTo({ top: 0, behavior: "smooth" });
   if (page === "catalogue") loadCatalogue();
+  if (page === "suppliers") loadSuppliers();
   if (page === "settings") { renderSettings(); loadAiSettings(); }
   if (page === "declarations") { renderDeclarationLanding(); loadExports(); }
   if (page === "admin") loadAdmin();
@@ -162,6 +164,37 @@ async function loadAdmin() {
       <article class="panel admin-panel"><div class="panel-head"><div><p class="eyebrow">ORGANISATIONS</p><h2>Usage overview</h2></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Organisation</th><th>Seats</th><th>Invoices</th><th>Created</th></tr></thead><tbody>${data.organisations.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${item.seats}</td><td>${item.invoices}</td><td>${escapeHtml(item.created_at)}</td></tr>`).join("")}</tbody></table></div></article>`;
     if ($("#registrationMode")) $("#registrationMode").value = data.settings.registration_mode || "closed";
   } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Administration unavailable</h2><p>${escapeHtml(error.message)}</p></div>`; }
+}
+
+async function loadSuppliers() {
+  const target = $("#supplierCentre");
+  if (!target) return;
+  target.innerHTML = `<div class="panel loading"></div>`;
+  try {
+    const suppliers = await api("/api/suppliers");
+    target.innerHTML = suppliers.length ? `<article class="panel table-panel"><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Supplier</th><th>Invoices</th><th>Products</th><th>Layout</th><th>Processing</th><th></th></tr></thead><tbody>${suppliers.map(item => `<tr><td><strong>${escapeHtml(item.supplier_name)}</strong><span class="subline">${escapeHtml(item.supplier_vat)}</span></td><td>${item.invoice_count}</td><td>${item.product_count}</td><td>${item.layout_version ? `Version ${item.layout_version} · ${item.template_count} saved` : "No saved layout"}</td><td><span class="subline">${item.local_runs || 0} local · ${item.ai_runs || 0} AI${item.failed_runs ? ` · ${item.failed_runs} failed` : ""}</span></td><td><button class="mini-button" data-open-supplier="${item.id}">Manage</button></td></tr>`).join("")}</tbody></table></div></article>` : `<div class="empty-state"><h2>No suppliers remembered yet</h2><p>Review an invoice and use Remember supplier or save a supplier map. The supplier will then appear here.</p><button class="button primary" data-nav="invoices">Open invoices</button></div>`;
+  } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Suppliers could not be loaded</h2><p>${escapeHtml(error.message)}</p></div>`; }
+}
+
+async function openSupplier(profileId) {
+  const target = $("#supplierCentre");
+  target.innerHTML = `<div class="panel loading"></div>`;
+  try {
+    const data = await api(`/api/suppliers/${profileId}`), supplier = data.supplier;
+    target.innerHTML = `<button class="text-button back" data-back-suppliers>← All suppliers</button>
+      <div class="supplier-hero"><div><p class="eyebrow">${escapeHtml(supplier.supplier_vat)}</p><h2>${escapeHtml(supplier.supplier_name)}</h2><p>Active layout version ${supplier.layout_version || "—"}</p></div><div class="supplier-health"><span>${data.templates.length}<small>Layout versions</small></span><span>${data.invoices.length}<small>Recent invoices</small></span></div></div>
+      <form id="supplierDefaultsForm" data-supplier-id="${profileId}" class="panel form-panel"><div class="section-heading"><span>01</span><div><h3>Defaults for future invoices</h3><p>These fill missing invoice fields. You can still change every invoice during review.</p></div></div><div class="form-grid three">
+        <label>Supplier name<input name="supplier_name" value="${escapeHtml(supplier.supplier_name)}"></label>
+        <label>Flow<select name="flow"><option value="A" ${supplier.flow === "A" ? "selected" : ""}>Arrivals</option><option value="D" ${supplier.flow === "D" ? "selected" : ""}>Dispatches</option></select></label>
+        <label>Currency<input name="currency" maxlength="3" value="${escapeHtml(supplier.currency)}"></label>
+        <label>Default consignment country<input name="consignment_country" maxlength="2" value="${escapeHtml(supplier.consignment_country)}"><small>Used only when a goods row has no own country.</small></label>
+        <label>Transport mode<input name="mode_transport" value="${escapeHtml(supplier.mode_transport)}"></label>
+        <label>Delivery terms<input name="terms_delivery" maxlength="3" value="${escapeHtml(supplier.terms_delivery)}"></label>
+        <label>Nature of transaction<input name="nature_transaction" value="${escapeHtml(supplier.nature_transaction)}"></label>
+      </div><div class="form-actions"><button class="button primary" type="submit">Save supplier defaults</button></div></form>
+      <article class="panel supplier-section"><div class="section-heading"><span>02</span><div><h3>Layout history</h3><p>Restoring an older version changes future extraction only. Existing reviewed invoices remain unchanged.</p></div></div><div class="template-list">${data.templates.length ? data.templates.map(template => `<div class="template-card ${template.active ? "active" : ""}"><div><strong>Version ${template.version}${template.active ? " · Active" : ""}</strong><p>${escapeHtml(template.source)} · ${escapeHtml(template.created_at.slice(0, 10))} · ${template.region_count} regions</p><div class="field-chip-list">${template.fields.map(field => `<span>${escapeHtml(field.replace("line_", "row ").replaceAll("_", " "))}</span>`).join("")}</div></div>${template.active ? `<span class="status approved">Active</span>` : `<button class="button quiet" data-restore-supplier-template="${template.id}" data-supplier-id="${profileId}">Restore</button>`}</div>`).join("") : `<div class="empty-state compact"><p>No saved layout versions. Open one of this supplier's invoices and choose Map supplier or Learn layout with AI.</p></div>`}</div></article>
+      <article class="panel supplier-section"><div class="section-heading"><span>03</span><div><h3>Recent invoices</h3><p>Use these to check the active layout against real results.</p></div></div><div class="supplier-invoices">${data.invoices.length ? data.invoices.map(invoice => `<button data-open-invoice="${invoice.id}"><div><strong>${escapeHtml(invoice.invoice_number || invoice.filename || "Invoice")}</strong><small>${escapeHtml(formatDate(invoice.invoice_date))}</small></div>${statusChip(invoice.status)}</button>`).join("") : `<p class="subline">No matching invoices were found.</p>`}</div></article>`;
+  } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Supplier could not be opened</h2><p>${escapeHtml(error.message)}</p><button class="button secondary" data-back-suppliers>Back</button></div>`; }
 }
 
 function renderRecentInvoices() {
@@ -502,6 +535,16 @@ document.addEventListener("click", async event => {
     return;
   }
   if (event.target.closest("#refreshAdminButton")) { loadAdmin(); return; }
+  if (event.target.closest("#refreshSuppliersButton") || event.target.closest("[data-back-suppliers]")) { loadSuppliers(); return; }
+  const supplierButton = event.target.closest("[data-open-supplier]");
+  if (supplierButton) { openSupplier(supplierButton.dataset.openSupplier); return; }
+  const restoreSupplierTemplate = event.target.closest("[data-restore-supplier-template]");
+  if (restoreSupplierTemplate) {
+    if (!confirm("Restore this layout for future invoices? Existing invoices will not change.")) return;
+    try { await api(`/api/suppliers/${restoreSupplierTemplate.dataset.supplierId}/templates/${restoreSupplierTemplate.dataset.restoreSupplierTemplate}/activate`, { method: "POST" }); await openSupplier(restoreSupplierTemplate.dataset.supplierId); toast("Supplier layout restored"); }
+    catch (error) { toast(error.message, "error"); }
+    return;
+  }
   if (event.target.closest("[data-add-account]")) { $("#accountForm").reset(); $("#accountDialog").showModal(); return; }
   const activation = event.target.closest("[data-activate-account]");
   if (activation) {
@@ -708,6 +751,14 @@ document.addEventListener("change", event => {
       row.classList.toggle("hidden", filter === "issues" ? row.dataset.hasIssue !== "true" : filter === "unreviewed" ? row.dataset.reviewed === "1" : filter === "goods" ? row.dataset.kind !== "goods" : filter === "charges" ? !row.dataset.kind.startsWith("charge") : false);
     });
   }
+});
+
+document.addEventListener("submit", async event => {
+  if (!event.target.matches("#supplierDefaultsForm")) return;
+  event.preventDefault();
+  const form = event.target;
+  try { await api(`/api/suppliers/${form.dataset.supplierId}`, { method: "PATCH", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); await openSupplier(form.dataset.supplierId); toast("Supplier defaults saved"); }
+  catch (error) { toast(error.message, "error"); }
 });
 
 $("#lineForm").addEventListener("submit", async event => {

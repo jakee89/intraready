@@ -39,6 +39,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Platform administration dashboard with account approval, usage visibility and closed/approval-only registration
 - Inactive billing plans and entitlement storage; this version cannot create payments or charges
 - Encrypted in-app OpenAI key storage, model selection, budget controls and token/cost dashboard
+- Supplier and Layout Centre with extraction history, reusable defaults, mapped fields and one-click version rollback
 
 CN-list importing, receipt-file upload and automatic NSO portal submission are not included. Manual review remains required. The XML schema is not bundled because the NSO download returned a Cloudflare block page during development; use the one-time schema upload in Organisation settings.
 

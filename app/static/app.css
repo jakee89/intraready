@@ -65,6 +65,23 @@ p { color: var(--muted); }
 .ai-usage-grid span { display:block; margin-bottom:8px; color:var(--muted); font-size:.78rem; font-weight:750; }
 .ai-usage-grid strong { font-size:1.25rem; }
 @media (max-width:900px) { .ai-usage-grid { grid-template-columns:repeat(2,1fr); } }
+.supplier-hero { display:flex; align-items:end; justify-content:space-between; gap:24px; margin:18px 0 24px; }
+.supplier-hero h2 { margin:0; font-size:2rem; }
+.supplier-health { display:flex; gap:10px; }
+.supplier-health span { min-width:120px; padding:14px; border:1px solid var(--line); border-radius:14px; background:var(--paper); font-size:1.35rem; font-weight:850; }
+.supplier-health small { display:block; margin-top:4px; color:var(--muted); font-size:.72rem; font-weight:650; }
+.supplier-section { margin-top:22px; }
+.template-list { display:grid; gap:12px; }
+.template-card { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:16px; border:1px solid var(--line); border-radius:14px; }
+.template-card.active { border-color:#9bd6c7; background:var(--mint-soft); }
+.template-card p { margin:4px 0 9px; color:var(--muted); }
+.field-chip-list { display:flex; flex-wrap:wrap; gap:6px; }
+.field-chip-list span { padding:4px 8px; border-radius:999px; color:var(--teal-dark); background:var(--mint); font-size:.72rem; }
+.supplier-invoices { display:grid; gap:8px; }
+.supplier-invoices>button { display:flex; align-items:center; justify-content:space-between; padding:14px; border:1px solid var(--line); border-radius:12px; text-align:left; background:var(--paper); cursor:pointer; }
+.supplier-invoices>button div { display:grid; }
+.supplier-invoices small { color:var(--muted); }
+@media (max-width:700px) { .supplier-hero { align-items:start; flex-direction:column; }.supplier-health { width:100%; }.supplier-health span { flex:1; min-width:0; } }
 .local-note { display: flex; gap: 10px; align-items: flex-start; margin: 24px 8px 0; padding-top: 18px; border-top: 1px solid rgba(255,255,255,.11); color: #d8e7e2; font-size: .76rem; font-weight: 700; }
 .local-note small { display: block; margin-top: 2px; color: #8db1a8; font-weight: 500; }
 .status-dot { width: 8px; height: 8px; margin-top: 4px; flex: none; border-radius: 50%; background: #78d6b9; box-shadow: 0 0 0 4px rgba(120,214,185,.12); }

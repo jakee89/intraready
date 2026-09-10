@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.10.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.11.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -559,6 +559,93 @@ def _supplier_profiles() -> list[dict]:
     return rows("SELECT * FROM supplier_profiles WHERE organisation_id=?", (_org_id(),))
 
 
+def _supplier_profile(profile_id: int) -> dict:
+    found = row("SELECT * FROM supplier_profiles WHERE id=? AND organisation_id=?", (profile_id, _org_id()))
+    if not found:
+        raise HTTPException(404, "Supplier not found")
+    return found
+
+
+@app.get("/api/suppliers")
+def get_suppliers():
+    suppliers = rows(
+        """SELECT sp.*,
+          (SELECT COUNT(*) FROM supplier_template_versions tv WHERE tv.organisation_id=sp.organisation_id AND tv.supplier_vat=sp.supplier_vat) AS template_count,
+          (SELECT COUNT(*) FROM product_facts pf WHERE pf.organisation_id=sp.organisation_id AND pf.supplier_vat=sp.supplier_vat) AS product_count,
+          (SELECT COUNT(*) FROM invoices i WHERE i.organisation_id=sp.organisation_id AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=sp.supplier_vat) AS invoice_count
+        FROM supplier_profiles sp WHERE sp.organisation_id=? ORDER BY sp.supplier_name""",
+        (_org_id(),),
+    )
+    for supplier in suppliers:
+        run_counts = row(
+            """SELECT
+               COALESCE(SUM(CASE WHEN er.method='manual-map' THEN 1 ELSE 0 END),0) AS local_runs,
+               COALESCE(SUM(CASE WHEN er.method='api-ai' THEN 1 ELSE 0 END),0) AS ai_runs,
+               COALESCE(SUM(CASE WHEN er.status='failed' THEN 1 ELSE 0 END),0) AS failed_runs
+               FROM extraction_runs er JOIN invoices i ON i.id=er.invoice_id
+               WHERE er.organisation_id=? AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=?""",
+            (_org_id(), supplier["supplier_vat"]),
+        )
+        supplier.update(run_counts or {})
+    return suppliers
+
+
+@app.get("/api/suppliers/{profile_id}")
+def get_supplier(profile_id: int):
+    supplier = _supplier_profile(profile_id)
+    templates = rows(
+        """SELECT id,version,layout_fingerprint,layout_mapping,source,active,source_invoice_id,created_at
+           FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=? ORDER BY version DESC""",
+        (_org_id(), supplier["supplier_vat"]),
+    )
+    for template in templates:
+        try:
+            mapping = json.loads(template.pop("layout_mapping") or "[]")
+        except json.JSONDecodeError:
+            mapping = []
+        template["region_count"] = len(mapping)
+        template["fields"] = sorted({item.get("field", "") for item in mapping if item.get("field")})
+    invoices = rows(
+        """SELECT i.id,i.invoice_number,i.invoice_date,i.status,i.updated_at,d.filename
+           FROM invoices i LEFT JOIN documents d ON d.id=i.document_id
+           WHERE i.organisation_id=? AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=?
+           ORDER BY i.updated_at DESC LIMIT 20""",
+        (_org_id(), supplier["supplier_vat"]),
+    )
+    return {"supplier": supplier, "templates": templates, "invoices": invoices}
+
+
+@app.patch("/api/suppliers/{profile_id}")
+def update_supplier(profile_id: int, body: dict):
+    supplier = _supplier_profile(profile_id)
+    fields = {"supplier_name", "flow", "currency", "consignment_country", "mode_transport", "terms_delivery", "nature_transaction"}
+    values = {key: _clean_value(key, value) for key, value in body.items() if key in fields}
+    if not values:
+        raise HTTPException(422, "No supplier defaults were supplied")
+    with transaction() as connection:
+        assignments = ",".join(f"{key}=?" for key in values)
+        connection.execute(f"UPDATE supplier_profiles SET {assignments},updated_at=? WHERE id=? AND organisation_id=?", (*values.values(), utc_now(), profile_id, _org_id()))
+    audit("supplier.defaults_updated", target_type="supplier", target_id=str(profile_id), details=",".join(values))
+    return _supplier_profile(profile_id)
+
+
+@app.post("/api/suppliers/{profile_id}/templates/{template_id}/activate")
+def activate_supplier_template(profile_id: int, template_id: int):
+    supplier = _supplier_profile(profile_id)
+    template = row("SELECT * FROM supplier_template_versions WHERE id=? AND organisation_id=? AND supplier_vat=?", (template_id, _org_id(), supplier["supplier_vat"]))
+    if not template:
+        raise HTTPException(404, "Template version not found")
+    with transaction() as connection:
+        connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier["supplier_vat"]))
+        connection.execute("UPDATE supplier_template_versions SET active=1 WHERE id=?", (template_id,))
+        connection.execute(
+            "UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=?,updated_at=? WHERE id=? AND organisation_id=?",
+            (template["layout_mapping"], template["layout_fingerprint"], template["version"], utc_now(), profile_id, _org_id()),
+        )
+    audit("supplier.template_restored", target_type="supplier", target_id=str(profile_id), details=f"version={template['version']}")
+    return {"active_version": template["version"]}
+
+
 def _remember_supplier(connection, invoice: dict) -> None:
     supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice.get("supplier_vat_country", "") + invoice.get("supplier_vat_number", "")).upper())
     if len(supplier_vat) < 6 or not invoice.get("supplier_name"):
@@ -631,7 +718,7 @@ def bootstrap():
     }
     automation = {
         "saved_layouts": row("SELECT COUNT(*) AS total FROM supplier_profiles WHERE organisation_id=? AND layout_version>0", (_org_id(),))["total"],
-        "local_layout_runs": row("SELECT COUNT(*) AS total FROM extraction_runs WHERE organisation_id=? AND method='saved-layout'", (_org_id(),))["total"],
+        "local_layout_runs": row("SELECT COUNT(*) AS total FROM extraction_runs WHERE organisation_id=? AND method='manual-map'", (_org_id(),))["total"],
         "ai_runs": row("SELECT COUNT(*) AS total FROM ai_usage_events WHERE organisation_id=? AND operation='invoice_layout_learning'", (_org_id(),))["total"],
     }
     return {
