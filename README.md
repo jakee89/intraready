@@ -34,6 +34,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Arrival and dispatch flows with period preview based on the actual movement date
 - Monthly declaration workspace with included/excluded invoices, blocking reasons, grouped totals, previous-month comparison and export attempts
 - Supplementary quantity and special commodity fields where the Malta format requires them
+- Inline supplementary-quantity input with the exact CN-required unit, plus conditional special quantity, range and collector fields
 - Export history with a place to record the NSO portal receipt reference
 - Internal review CSV containing invoice references
 - XML generation only after an official XSD passes inspection; every XML is validated against that XSD

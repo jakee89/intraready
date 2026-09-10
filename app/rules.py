@@ -93,6 +93,8 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
                 elif requirement["supp_unit"]:
                     if not line.get("supp_qty"):
                         add("missing_supp_quantity", f"This CN code requires supplementary quantity in {requirement['supp_unit']}.", "supp_qty", line.get("id"))
+                    elif decimal_or_none(line.get("supp_qty")) is None or decimal_or_none(line.get("supp_qty")) <= 0:
+                        add("invalid_supp_quantity", f"Supplementary quantity in {requirement['supp_unit']} must be greater than zero.", "supp_qty", line.get("id"))
                     if line.get("supp_unit") != requirement["supp_unit"]:
                         add("wrong_supp_unit", f"Supplementary unit must be {requirement['supp_unit']} for this CN code.", "supp_unit", line.get("id"))
             if line.get("origin_country") and not re.fullmatch(r"[A-Z]{2}", str(line["origin_country"]).upper()):

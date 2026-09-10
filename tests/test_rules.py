@@ -61,6 +61,13 @@ class RuleTests(unittest.TestCase):
         line["consignment_country"] = "US"
         self.assertIn("consignment_not_eu", {i["code"] for i in invoice_issues(complete_invoice(), [line], complete_profile())})
 
+    def test_cn_supplementary_quantity_requires_matching_unit_and_positive_value(self):
+        line = goods()
+        line.update(hs_code="37011000", supp_qty="", supp_unit="m2")
+        self.assertIn("missing_supp_quantity", {i["code"] for i in invoice_issues(complete_invoice(), [line], complete_profile())})
+        line["supp_qty"] = "12.5"
+        self.assertNotIn("missing_supp_quantity", {i["code"] for i in invoice_issues(complete_invoice(), [line], complete_profile())})
+
     def test_rounding_is_half_up_and_mass_minimum_is_export_concern(self):
         self.assertEqual(rounded_whole("12.50"), 13)
         self.assertEqual(rounded_whole("12.49"), 12)

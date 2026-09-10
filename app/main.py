@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.15.1", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.16.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -1173,8 +1173,11 @@ async def update_line(line_id: int, request: Request):
     updates = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
     if "hs_code" in updates:
         requirement = cn_requirement(updates["hs_code"])
-        if requirement["supp_unit"] and not updates.get("supp_unit", found.get("supp_unit")):
+        if requirement["supp_unit"]:
             updates["supp_unit"] = requirement["supp_unit"]
+        elif requirement["valid"]:
+            updates["supp_unit"] = ""
+            updates["supp_qty"] = ""
         if requirement["supp_unit"] in {"p/st", "pa"} and updates.get("quantity", found.get("quantity")) and not updates.get("supp_qty", found.get("supp_qty")):
             updates["supp_qty"] = updates.get("quantity", found.get("quantity"))
     if "unit_net_mass" in updates:
@@ -1188,6 +1191,11 @@ async def update_line(line_id: int, request: Request):
         updates["net_mass"] = format(Decimal(found["unit_net_mass"]) * Decimal(updates["quantity"]), "f") if updates["quantity"] else ""
     elif "net_mass" in updates:
         updates["net_mass_overridden"] = 1
+    if "quantity" in updates:
+        requirement = cn_requirement(updates.get("hs_code", found.get("hs_code", "")))
+        if requirement["supp_unit"] in {"p/st", "pa"} and (not found.get("supp_qty") or found.get("supp_qty") == found.get("quantity")):
+            updates["supp_qty"] = updates["quantity"]
+            updates["supp_unit"] = requirement["supp_unit"]
     if "line_kind" in updates and updates["line_kind"] not in {"goods", "charge", "charge_invoice", "charge_stat", "excluded"}:
         raise HTTPException(422, "Unsupported row type")
     if "linked_line_id" in updates and updates["linked_line_id"] is not None:
