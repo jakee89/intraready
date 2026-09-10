@@ -4,6 +4,7 @@
 
 - On an invoice, use **Remember supplier** after checking the shipment defaults. Approval also saves them automatically. Future PDFs are matched by supplier VAT/name and reuse flow, currency, consignment country, transport mode, Incoterm and transaction nature.
 - Confirmed supplier layouts use the fast local reader and consume no API credits. Uploading never calls an external AI. For an unknown or changed layout, the user can explicitly click **AI complete form**, approve sending that PDF to OpenAI, and save a new versioned supplier template.
+- Saved layouts adapt their columns to the current table headers, page count and row positions instead of reusing one invoice's fixed row boxes. Dedicated semantic readers handle known Stricker and midocean formats first.
 - **Re-read locally** repairs unreviewed rows using the saved supplier layout without spending API credits.
 - **AI complete form** fills supported invoice fields and rows while leaving unsupported evidence for manual review; the invoice queue can run it explicitly on multiple selected PDFs.
 - CN codes are checked against the 2026 EU Combined Nomenclature. The required supplementary unit is filled automatically; piece/pair quantities are copied from the goods quantity and all other required quantities remain visible for manual entry.

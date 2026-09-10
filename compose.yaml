@@ -1,7 +1,7 @@
 services:
   intraready:
     build: .
-    image: intraready:0.13.0
+    image: intraready:0.14.0
     container_name: intraready
     restart: unless-stopped
     environment:

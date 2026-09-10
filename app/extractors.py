@@ -274,8 +274,10 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
     columns: dict[str, list[dict]] = {}
     with pdfplumber.open(path) as pdf:
         semantic_item_refs: list[dict] = []
+        words_by_page: dict[int, list[dict]] = {}
         for page_number, page in enumerate(pdf.pages, 1):
             words = page.extract_words(x_tolerance=2, y_tolerance=3)
+            words_by_page[page_number] = words
             for index, word in enumerate(words):
                 if word["text"].strip().lower() != "item":
                     continue
@@ -295,24 +297,45 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
             page_number = int(region.get("page", 1))
             if page_number < 1 or page_number > len(pdf.pages):
                 continue
-            page = pdf.pages[page_number - 1]
             x, y, width, height = (float(region.get(key, 0)) for key in ("x", "y", "width", "height"))
-            box = (x * page.width, y * page.height, (x + width) * page.width, (y + height) * page.height)
-            crop = page.crop(box)
             field = str(region.get("field", ""))
             if field.startswith("line_"):
-                grouped: list[dict] = []
-                for word in crop.extract_words(x_tolerance=2, y_tolerance=3):
-                    relative_y = float(word["top"]) / page.height
-                    existing = next((item for item in grouped if item.get("page") == page_number and abs(item["y"] - relative_y) < 0.006), None)
-                    if existing:
-                        existing["text"] += " " + word["text"]
-                    else:
-                        grouped.append({"page": page_number, "y": relative_y, "text": word["text"]})
-                columns.setdefault(field[5:], []).extend(grouped)
+                # Column x positions remain useful when product count and row heights change. Find the
+                # table header again and extend each learned column through the live table on every page.
+                for candidate_number, page in enumerate(pdf.pages, 1):
+                    words = words_by_page[candidate_number]
+                    header_words = [word for word in words if word["text"].strip().lower().rstrip(".:") in {
+                        "item", "ref", "product", "code", "description", "qty", "quantity", "price", "amount", "total"
+                    }]
+                    header_rows: dict[int, list[dict]] = {}
+                    for word in header_words:
+                        header_rows.setdefault(round(float(word["top"]) / 4), []).append(word)
+                    header = max(header_rows.values(), key=len, default=[])
+                    if candidate_number != page_number and len(header) < 2:
+                        continue
+                    start = (max(float(word["bottom"]) for word in header) + 2) / page.height if len(header) >= 2 else max(0, y - .01)
+                    end = .96
+                    if candidate_number == page_number:
+                        start = min(start, max(0, y - .01))
+                    box = (max(0, x - .003) * page.width, start * page.height, min(1, x + width + .003) * page.width, end * page.height)
+                    grouped: list[dict] = []
+                    selected_words = [word for word in words if box[0] <= float(word["x0"]) < box[2] and box[1] <= float(word["top"]) < box[3]]
+                    for word in selected_words:
+                        relative_y = float(word["top"]) / page.height
+                        existing = next((item for item in grouped if abs(item["y"] - relative_y) < 0.004), None)
+                        if existing:
+                            existing["text"] += " " + word["text"]
+                        else:
+                            grouped.append({"page": candidate_number, "y": relative_y, "text": word["text"]})
+                    columns.setdefault(field[5:], []).extend(grouped)
             else:
+                page = pdf.pages[page_number - 1]
+                box = (x * page.width, y * page.height, (x + width) * page.width, (y + height) * page.height)
+                crop = page.crop(box)
                 value = (crop.extract_text(x_tolerance=2, y_tolerance=2) or "").strip().replace("\n", " ")
                 if not value:
+                    continue
+                if profile.get("supplier_vat") and field in {"supplier_name", "supplier_vat_country", "supplier_vat_number"}:
                     continue
                 if field in {"invoice_date", "arrival_date"}:
                     value = _iso_date(value)
@@ -339,11 +362,11 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
         for field, entries in columns.items():
             same_page = [item for item in entries if item.get("page", anchor.get("page", 1)) == anchor.get("page", 1)]
             nearest = min(same_page, key=lambda item: abs(item["y"] - anchor["y"]), default=None)
-            values[field] = nearest["text"].strip() if nearest and abs(nearest["y"] - anchor["y"]) < 0.018 else ""
+            values[field] = nearest["text"].strip() if nearest and abs(nearest["y"] - anchor["y"]) < 0.009 else ""
         description = values.get("description", "")
         amount = _money(values.get("invoice_value", ""))
-        quantity = _money(values.get("quantity", ""))
-        if not description or not amount:
+        quantity = _money(_first(r"([\d.,]+)", values.get("quantity", "")))
+        if not description or not amount or re.search(r"(?i)^\s*(?:sub\s*)?total\b", description):
             continue
         raw_code = re.sub(r"\D", "", values.get("hs_code", ""))
         unit_mass_text = values.get("unit_net_mass", "")
@@ -356,13 +379,15 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
             kind = "charge_stat"
         elif not raw_code and re.search(r"(?i)print|engraving|logo|personalisation|decoration|setup|set-up|handling", description):
             kind = "charge_invoice"
+        elif not raw_code and re.search(r"(?i)\b(?:vat|tax)\b", description):
+            kind = "excluded"
         parsed.append({
             "sku": values.get("sku", ""), "description": description, "quantity": quantity, "unit": values.get("unit", "").upper(),
             "raw_commodity_code": raw_code, "hs_code": raw_code[:8], "origin_country": values.get("origin_country", "").upper(),
             "consignment_country": values.get("consignment_country", "").upper() or draft.get("consignment_country", ""),
             "invoice_value": amount, "statistical_value": amount, "unit_net_mass": unit_mass, "net_mass": total_mass,
             "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "", "line_kind": kind, "reviewed": False,
-            "source_page": anchor.get("page", 1), "confidence": "manual-map", "notes": "Extracted with the saved supplier map; verify this row.",
+            "source_page": anchor.get("page", 1), "confidence": "adaptive-layout", "notes": "Extracted with the adaptive saved supplier layout; verify this row.",
         })
         if kind == "goods":
             last_goods_position = len(parsed)
@@ -370,8 +395,8 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
             parsed[-1]["linked_position"] = last_goods_position
     if parsed:
         draft["lines"] = parsed
-        draft["adapter"] = "manual-map"
-        draft["notes"] += " Saved visual supplier mapping was used; AI was skipped."
+        draft["adapter"] = "adaptive-layout"
+        draft["notes"] += " The saved supplier columns were adapted to the current row count; AI was skipped."
     return draft
 
 
@@ -456,19 +481,19 @@ def _parse_stricker(draft: dict, page_lines: list[list[str]], text: str) -> dict
     draft.update({
         "supplier_name": "Paul Stricker, SA",
         "supplier_vat_country": "PT",
-        "supplier_vat_number": _first(r"NIF-\s*PT([A-Z0-9]+)", text),
+        "supplier_vat_number": _first(r"NIF\s*[-:]?\s*PT\s*([A-Z0-9]+)", text, re.I),
         "invoice_number": _first(r"Fatura\s+FCI\s+(FCI-[A-Z0-9/\-]+)", text),
         "invoice_date": _iso_date(_first(r"(?m)^(\d{2}-\d{2}-\d{4})\s+\d{2}-\d{2}-\d{4}", text)),
         "arrival_date": "",
         "total_value": _money(_first(r"TOTAL\s+([\d., ]+)\s+EUR", text)),
-        "terms_delivery": _first(r"Incoterm:\s*([A-Z]{3})", text),
-        "mode_transport": "4" if "TNTECON" in text else "",
+        "terms_delivery": _first(r"Incoterm\s*:?\s*([A-Z]{3})", text, re.I).upper() or draft.get("terms_delivery", ""),
+        "mode_transport": "4" if "TNTECON" in text else draft.get("mode_transport", ""),
         "consignment_country": "PT",
         "adapter": "stricker",
     })
     grouped: OrderedDict[tuple, dict] = OrderedDict()
     line_pattern = re.compile(
-        r"^(\S+)\s+(P[DS]-\d+|CS-\d+)\s+(.+?)\s+(\d+(?:[.,]\d+)?)UN\s+([\d.,]+)(?:\s+([\d.,]+))?(?:\s+[\d.,]+)?$"
+        r"^(\S+)\s+(P[DS]-\d+|CS-\d+)\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s*UN\s+([\d.,]+)(?:\s+([\d.,]+))?(?:\s+[\d.,]+)?$"
     )
     for page_number, lines in enumerate(page_lines, 1):
         for index, raw in enumerate(lines):
@@ -607,23 +632,22 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
             draft["notes"] += " The PDF pages were analysed to preserve the table layout."
         elif ai_message:
             draft["notes"] += " " + ai_message
+    elif "Paul Stricker" in combined:
+        draft = _parse_stricker(draft, page_lines, combined)
+        if not draft["lines"] and matched_profile and matched_profile.get("layout_mapping"):
+            draft = _parse_saved_mapping(path, draft, matched_profile)
+    elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
+        draft = _parse_midocean(draft, page_lines, combined)
+        if not draft["lines"] and matched_profile and matched_profile.get("layout_mapping"):
+            draft = _parse_saved_mapping(path, draft, matched_profile)
     elif matched_profile and matched_profile.get("layout_mapping"):
         fingerprint_changed = bool(matched_profile.get("layout_fingerprint") and matched_profile.get("layout_fingerprint") != layout_fingerprint(path))
         draft = _parse_saved_mapping(path, draft, matched_profile)
         if not draft["lines"]:
-            if "Paul Stricker" in combined:
-                draft = _parse_stricker(draft, page_lines, combined)
-            elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
-                draft = _parse_midocean(draft, page_lines, combined)
-            else:
-                draft = _parse_common_tables(draft, tables, combined)
+            draft = _parse_common_tables(draft, tables, combined)
             draft["notes"] += " The saved map produced no reliable rows, so the built-in supplier reader was used."
         elif fingerprint_changed:
             draft["notes"] += " The saved supplier map was reused on a visually different invoice; verify the extracted rows."
-    elif "Paul Stricker" in combined:
-        draft = _parse_stricker(draft, page_lines, combined)
-    elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
-        draft = _parse_midocean(draft, page_lines, combined)
     else:
         draft = _parse_common_tables(draft, tables, combined)
         if not draft["lines"]:

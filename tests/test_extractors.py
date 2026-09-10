@@ -24,7 +24,7 @@ class ExtractorTests(unittest.TestCase):
     def test_stricker_repeated_goods_are_aggregated(self):
         page = [
             "Fatura FCI FCI-PT10126/1", "01-09-2026 02-09-2026", "TOTAL 20,00 EUR", "Incoterm: DAP",
-            "ABC PD-00000001 Widget blue 2UN 5,000 10,00 0,0", "TARIC Code: 1234567890 Product Origin: China",
+            "ABC PD-00000001 Widget blue 2 UN 5,000 10,00 0,0", "TARIC Code: 1234567890 Product Origin: China",
             "ABC PD-00000001 Widget blue 2UN 5,000 10,00 0,0", "TARIC Code: 1234567890 Product Origin: China",
             "NIF- PT501888640",
         ]

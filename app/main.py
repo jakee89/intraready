@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.13.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.14.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -783,7 +783,7 @@ def bootstrap():
     }
     automation = {
         "saved_layouts": row("SELECT COUNT(*) AS total FROM supplier_profiles WHERE organisation_id=? AND layout_version>0", (_org_id(),))["total"],
-        "local_layout_runs": row("SELECT COUNT(*) AS total FROM extraction_runs WHERE organisation_id=? AND method='manual-map'", (_org_id(),))["total"],
+        "local_layout_runs": row("SELECT COUNT(*) AS total FROM extraction_runs WHERE organisation_id=? AND method IN ('manual-map','adaptive-layout','stricker','midocean')", (_org_id(),))["total"],
         "ai_runs": row("SELECT COUNT(*) AS total FROM ai_usage_events WHERE organisation_id=? AND operation='invoice_layout_learning'", (_org_id(),))["total"],
     }
     return {
@@ -1016,7 +1016,7 @@ def activate_supplier_template(invoice_id: int, template_id: int):
 
 
 @app.post("/api/invoices/{invoice_id}/extract-again")
-def extract_again(invoice_id: int, use_ai: bool = False):
+def extract_again(invoice_id: int, use_ai: bool = False, replace_reviewed: bool = False):
     started = time.monotonic()
     invoice = _invoice(invoice_id)
     if invoice["status"] == "submitted":
@@ -1034,9 +1034,12 @@ def extract_again(invoice_id: int, use_ai: bool = False):
     updates["notes"] = draft["notes"]
     now = utc_now()
     with transaction() as connection:
-        reviewed_lines = [item for item in _lines(invoice_id) if item["reviewed"]]
+        reviewed_lines = [] if replace_reviewed else [item for item in _lines(invoice_id) if item["reviewed"]]
         reviewed_keys = {(item["sku"].strip().upper(), item["description"].strip().upper()) for item in reviewed_lines}
-        connection.execute("DELETE FROM invoice_lines WHERE invoice_id=? AND reviewed=0", (invoice_id,))
+        if replace_reviewed:
+            connection.execute("DELETE FROM invoice_lines WHERE invoice_id=?", (invoice_id,))
+        else:
+            connection.execute("DELETE FROM invoice_lines WHERE invoice_id=? AND reviewed=0", (invoice_id,))
         positions_to_ids = {}
         pending_links = []
         next_position = max((item["position"] for item in reviewed_lines), default=0)
@@ -1070,7 +1073,7 @@ def extract_again(invoice_id: int, use_ai: bool = False):
         template_invoice = {**invoice, **updates, "id": invoice_id}
         template_version = _store_supplier_template(connection, template_invoice, draft.get("suggested_layout", []), layout_fingerprint(UPLOAD_DIR / document["storage_name"]), "api-ai")
         _suggest_from_catalogue(connection, invoice_id)
-        _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"], "template_version": template_version})
+        _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"], "template_version": template_version, "replace_reviewed": replace_reviewed})
         meta = draft.get("ai_meta", {})
         connection.execute("INSERT INTO extraction_runs(organisation_id,invoice_id,method,status,message,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
                            (_org_id(), invoice_id, draft["adapter"], "completed", json.dumps({"notes": draft["notes"][-700:], "request_id": meta.get("request_id", ""), "usage": meta.get("usage", {})}), round((time.monotonic()-started)*1000), now))
