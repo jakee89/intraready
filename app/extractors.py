@@ -29,13 +29,20 @@ VALID_COUNTRIES = set(COUNTRY_NAMES.values()) | {"CY", "LU", "SI", "HR", "LT", "
 
 
 def layout_fingerprint(path: Path) -> str:
-    """Stable enough to detect a supplier layout while ignoring invoice values."""
+    """Detect structural supplier-layout changes while ignoring row count and values."""
     try:
         with pdfplumber.open(path) as pdf:
-            parts = [f"{round(page.width)}x{round(page.height)}" for page in pdf.pages]
-            text = " ".join((page.extract_text() or "")[:3000] for page in pdf.pages[:2]).upper()
-        words = re.findall(r"[A-Z]{3,}", text)[:120]
-        return hashlib.sha256(("|".join(parts + words)).encode()).hexdigest()[:20]
+            if not pdf.pages:
+                return ""
+            page = pdf.pages[0]
+            stable_words = []
+            for word in page.extract_words() or []:
+                relative_top = float(word.get("top", 0)) / max(float(page.height), 1)
+                token = re.sub(r"[^A-Z]", "", str(word.get("text", "")).upper())
+                if len(token) >= 3 and (relative_top <= .34 or relative_top >= .90):
+                    stable_words.append(token)
+            signature = "|".join([f"{round(page.width)}x{round(page.height)}"] + stable_words[:100])
+        return "v2-" + hashlib.sha256(signature.encode()).hexdigest()[:20]
     except Exception:
         return ""
 

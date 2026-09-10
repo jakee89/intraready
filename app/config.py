@@ -9,6 +9,7 @@ DATA_DIR = Path(os.getenv("INTRASTAT_DATA_DIR", BASE_DIR / "data")).resolve()
 DATABASE_PATH = DATA_DIR / "intrastat.sqlite3"
 UPLOAD_DIR = DATA_DIR / "documents"
 EXPORT_DIR = DATA_DIR / "exports"
+RECEIPT_DIR = DATA_DIR / "receipts"
 SCHEMA_DIR = DATA_DIR / "schemas"
 
 MAX_UPLOAD_BYTES = int(os.getenv("INTRASTAT_MAX_UPLOAD_MB", "20")) * 1024 * 1024
@@ -22,5 +23,5 @@ AUTH_COOKIE_SECURE = os.getenv("INTRASTAT_AUTH_COOKIE_SECURE", "false").lower() 
 
 
 def ensure_directories() -> None:
-    for directory in (DATA_DIR, UPLOAD_DIR, EXPORT_DIR, SCHEMA_DIR):
+    for directory in (DATA_DIR, UPLOAD_DIR, EXPORT_DIR, RECEIPT_DIR, SCHEMA_DIR):
         directory.mkdir(parents=True, exist_ok=True)

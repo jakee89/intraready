@@ -12,12 +12,12 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 import pdfplumber
 
-from .config import APP_TITLE, AUTH_COOKIE_SECURE, BASE_DIR, BOOTSTRAP_TOKEN, EXPORT_DIR, MAX_UPLOAD_BYTES, SCHEMA_DIR, UPLOAD_DIR, ensure_directories
+from .config import APP_TITLE, AUTH_COOKIE_SECURE, BASE_DIR, BOOTSTRAP_TOKEN, EXPORT_DIR, MAX_UPLOAD_BYTES, RECEIPT_DIR, SCHEMA_DIR, UPLOAD_DIR, ensure_directories
 from .auth import (
     SESSION_COOKIE, audit, authenticate, create_session, current_context, first_membership,
     current_organisation_id, hash_password, is_platform_admin, load_session,
@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.17.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.18.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -648,7 +648,8 @@ def get_suppliers():
         """SELECT sp.*,
           (SELECT COUNT(*) FROM supplier_template_versions tv WHERE tv.organisation_id=sp.organisation_id AND tv.supplier_vat=sp.supplier_vat) AS template_count,
           (SELECT COUNT(*) FROM product_facts pf WHERE pf.organisation_id=sp.organisation_id AND pf.supplier_vat=sp.supplier_vat) AS product_count,
-          (SELECT COUNT(*) FROM invoices i WHERE i.organisation_id=sp.organisation_id AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=sp.supplier_vat) AS invoice_count
+          (SELECT COUNT(*) FROM invoices i WHERE i.organisation_id=sp.organisation_id AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=sp.supplier_vat) AS invoice_count,
+          (SELECT COUNT(*) FROM invoices i WHERE i.organisation_id=sp.organisation_id AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=sp.supplier_vat AND i.layout_status='changed') AS drift_count
         FROM supplier_profiles sp WHERE sp.organisation_id=? ORDER BY sp.supplier_name""",
         (_org_id(),),
     )
@@ -682,7 +683,7 @@ def get_supplier(profile_id: int):
         template["region_count"] = len(mapping)
         template["fields"] = sorted({item.get("field", "") for item in mapping if item.get("field")})
     invoices = rows(
-        """SELECT i.id,i.invoice_number,i.invoice_date,i.status,i.updated_at,d.filename
+        """SELECT i.id,i.invoice_number,i.invoice_date,i.status,i.layout_status,i.layout_message,i.updated_at,d.filename
            FROM invoices i LEFT JOIN documents d ON d.id=i.document_id
            WHERE i.organisation_id=? AND UPPER(REPLACE(i.supplier_vat_country || i.supplier_vat_number,' ',''))=?
            ORDER BY i.updated_at DESC LIMIT 20""",
@@ -848,6 +849,22 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             except Exception:
                 continue
         draft["suggested_layout"] = verified_layout
+        detected_fingerprint = layout_fingerprint(destination)
+        supplier_vat = re.sub(r"[^A-Z0-9]", "", (draft.get("supplier_vat_country", "") + draft.get("supplier_vat_number", "")).upper())
+        matched_profile = row("SELECT layout_fingerprint,layout_version,layout_mapping FROM supplier_profiles WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat)) if supplier_vat else None
+        if matched_profile and matched_profile.get("layout_mapping"):
+            saved_fingerprint = matched_profile.get("layout_fingerprint") or ""
+            if saved_fingerprint and not saved_fingerprint.startswith("v2-"):
+                layout_status = "check"
+                layout_message = "The layout detector was upgraded. Review this invoice once, then save the supplier layout to establish the new baseline."
+            else:
+                layout_changed = bool(saved_fingerprint and saved_fingerprint != detected_fingerprint)
+                layout_status = "changed" if layout_changed else "matched"
+                layout_message = (f"Layout differs from saved version {matched_profile['layout_version']}; check the extraction and save a new version only if correct."
+                                  if layout_changed else f"Matched saved supplier layout version {matched_profile['layout_version']}.")
+        else:
+            layout_status = "new"
+            layout_message = "No saved layout exists for this supplier yet."
         now = utc_now()
         with transaction() as connection:
             document_id = connection.execute(
@@ -860,6 +877,8 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
                 f"INSERT INTO invoices(organisation_id,document_id,{','.join(invoice_columns)},created_at,updated_at) VALUES(?,?,{','.join('?' for _ in invoice_columns)},?,?)",
                 (_org_id(), document_id, *(draft[field] for field in invoice_columns), now, now),
             ).lastrowid
+            connection.execute("UPDATE invoices SET layout_status=?,layout_message=?,detected_layout_fingerprint=? WHERE id=?",
+                               (layout_status, layout_message, detected_fingerprint, invoice_id))
             positions_to_ids = {}
             pending_links = []
             for position, line in enumerate(draft["lines"], 1):
@@ -883,7 +902,10 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             for line_id, linked_position in pending_links:
                 connection.execute("UPDATE invoice_lines SET linked_line_id=? WHERE id=?", (positions_to_ids.get(linked_position), line_id))
             draft["id"] = invoice_id
-            template_version = _store_supplier_template(connection, draft, draft.get("suggested_layout", []), layout_fingerprint(destination), "api-ai")
+            # A new upload must never silently replace a supplier layout that the user already accepted.
+            # Its saved version remains active until the comparison screen is explicitly saved or rolled back.
+            template_version = (matched_profile.get("layout_version") if matched_profile and matched_profile.get("layout_mapping")
+                                else _store_supplier_template(connection, draft, draft.get("suggested_layout", []), detected_fingerprint, "api-ai"))
             _suggest_from_catalogue(connection, invoice_id)
             meta = draft.get("ai_meta", {})
             if meta:
@@ -892,6 +914,8 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
                                     json.dumps({"request_id": meta.get("request_id", ""), "response_id": meta.get("response_id", ""), "error_code": meta.get("error_code", ""), "error": meta.get("error", ""), "usage": meta.get("usage", {})}),
                                     meta.get("duration_ms", 0), now))
             _record_event(connection, invoice_id, "invoice_uploaded", {"filename": filename, "adapter": draft["adapter"], "template_version": template_version})
+            if layout_status == "changed":
+                _record_event(connection, invoice_id, "supplier_layout_drift", {"saved_version": matched_profile["layout_version"], "detected_fingerprint": detected_fingerprint})
         results.append({"filename": filename, "invoice_id": invoice_id, "duplicate": False, "adapter": draft["adapter"], "template_version": template_version})
     return {"results": results}
 
@@ -926,6 +950,69 @@ def document_page_image(document_id: int, page_number: int):
     return Response(output.getvalue(), media_type="image/png")
 
 
+def _pdf_evidence_boxes(path: Path, values: list[str], preferred_page: int | None = None) -> tuple[int, list[dict]]:
+    with pdfplumber.open(path) as pdf:
+        page_numbers = [preferred_page] if preferred_page and 1 <= preferred_page <= len(pdf.pages) else list(range(1, len(pdf.pages) + 1))
+        for page_number in page_numbers:
+            page = pdf.pages[page_number - 1]
+            for value in values:
+                value = str(value or "").strip()
+                if len(value) < 2:
+                    continue
+                try:
+                    matches = page.search(value, regex=False, case=False)[:8]
+                except Exception:
+                    matches = []
+                if matches:
+                    return page_number, [{
+                        "x": float(match["x0"]) / page.width, "y": float(match["top"]) / page.height,
+                        "width": (float(match["x1"]) - float(match["x0"])) / page.width,
+                        "height": (float(match["bottom"]) - float(match["top"])) / page.height,
+                    } for match in matches]
+    return preferred_page or 1, []
+
+
+@app.get("/api/invoices/{invoice_id}/evidence")
+def invoice_evidence(invoice_id: int, field: str = "", line_id: int | None = None):
+    invoice = _invoice(invoice_id)
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), _org_id()))
+    if not document:
+        raise HTTPException(422, "This invoice has no source PDF.")
+    values: list[str] = []
+    preferred_page = None
+    source = document.get("extraction_method") or "PDF extraction"
+    label = field.replace("_", " ").title() if field else "Invoice row"
+    if line_id is not None:
+        line = row("SELECT * FROM invoice_lines WHERE id=? AND invoice_id=?", (line_id, invoice_id))
+        if not line:
+            raise HTTPException(404, "Invoice row not found")
+        values = [line.get("sku", ""), line.get("description", "")]
+        preferred_page = line.get("source_page") or 1
+        source = line.get("confidence") or source
+        label = line.get("sku") or line.get("description") or "Invoice row"
+    elif field in INVOICE_FIELDS:
+        value = str(invoice.get(field, ""))
+        values = [value]
+        if field in {"invoice_date", "arrival_date"} and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            year, month, day = value.split("-")
+            values.extend([f"{day}-{month}-{year}", f"{day}/{month}/{year}", f"{day}.{month}.{year}"])
+        supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice.get("supplier_vat_country", "") + invoice.get("supplier_vat_number", "")).upper())
+        profile = row("SELECT layout_mapping FROM supplier_profiles WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat)) if supplier_vat else None
+        if profile:
+            try:
+                region = next((item for item in json.loads(profile.get("layout_mapping") or "[]") if item.get("field") == field), None)
+            except json.JSONDecodeError:
+                region = None
+            if region:
+                return {"document_id": document["id"], "page": region["page"], "boxes": [region], "label": label,
+                        "source": "saved supplier layout", "message": "Highlighted from the active supplier layout."}
+    else:
+        raise HTTPException(422, "Choose a supported invoice field or row.")
+    page_number, boxes = _pdf_evidence_boxes(UPLOAD_DIR / document["storage_name"], values, preferred_page)
+    return {"document_id": document["id"], "page": page_number, "boxes": boxes, "label": label, "source": source,
+            "message": "Highlighted where the current value appears in the PDF." if boxes else "The current value was not found exactly in the PDF; it may have been normalised, combined or entered manually."}
+
+
 @app.get("/api/invoices/{invoice_id}/supplier-mapping")
 def get_supplier_mapping(invoice_id: int):
     invoice = _invoice(invoice_id)
@@ -935,7 +1022,11 @@ def get_supplier_mapping(invoice_id: int):
     profile = row("SELECT * FROM supplier_profiles WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat)) if supplier_vat else None
     return {"document_id": invoice["document_id"], "supplier": invoice["supplier_name"], "supplier_vat": supplier_vat,
             "page_count": row("SELECT page_count FROM documents WHERE id=?", (invoice["document_id"],))["page_count"],
-            "regions": json.loads(profile.get("layout_mapping") or "[]") if profile else []}
+            "regions": json.loads(profile.get("layout_mapping") or "[]") if profile else [],
+            "layout_status": invoice.get("layout_status", "unknown"), "layout_message": invoice.get("layout_message", ""),
+            "detected_fingerprint": invoice.get("detected_layout_fingerprint", ""),
+            "active_version": profile.get("layout_version") if profile else None,
+            "active_fingerprint": profile.get("layout_fingerprint") if profile else ""}
 
 
 def _mapping_region_text(document: dict, region: dict) -> str:
@@ -999,6 +1090,8 @@ async def save_supplier_mapping(invoice_id: int, request: Request):
     fingerprint = layout_fingerprint(UPLOAD_DIR / document["storage_name"])
     with transaction() as connection:
         version = _store_supplier_template(connection, invoice, clean, fingerprint, "manual")
+        connection.execute("UPDATE invoices SET layout_status='matched',layout_message=?,detected_layout_fingerprint=? WHERE id=?",
+                           (f"Saved as supplier layout version {version}.", fingerprint, invoice_id))
         _record_event(connection, invoice_id, "supplier_mapping_saved", {"regions": len(clean), "version": version})
     return {"saved": True, "regions": clean, "fingerprint": fingerprint, "version": version}
 
@@ -1083,6 +1176,9 @@ def extract_again(invoice_id: int, use_ai: bool = False, replace_reviewed: bool 
         connection.execute("UPDATE documents SET extracted_text=?,extraction_method=? WHERE id=?", (extracted_text, draft["adapter"], document["id"]))
         template_invoice = {**invoice, **updates, "id": invoice_id}
         template_version = _store_supplier_template(connection, template_invoice, draft.get("suggested_layout", []), layout_fingerprint(UPLOAD_DIR / document["storage_name"]), "api-ai")
+        if template_version:
+            connection.execute("UPDATE invoices SET layout_status='matched',layout_message=?,detected_layout_fingerprint=? WHERE id=?",
+                               (f"AI extraction saved as supplier layout version {template_version}.", layout_fingerprint(UPLOAD_DIR / document["storage_name"]), invoice_id))
         _suggest_from_catalogue(connection, invoice_id)
         _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"], "template_version": template_version, "replace_reviewed": replace_reviewed})
         meta = draft.get("ai_meta", {})
@@ -1808,6 +1904,68 @@ def get_exports():
     return rows("SELECT * FROM export_snapshots WHERE organisation_id=? ORDER BY created_at DESC", (_org_id(),))
 
 
+@app.get("/api/exports/{export_id}/receipt")
+def get_submission_receipt(export_id: int):
+    snapshot = row("SELECT * FROM export_snapshots WHERE id=? AND organisation_id=?", (export_id, _org_id()))
+    if not snapshot or not snapshot.get("receipt_storage_name"):
+        raise HTTPException(404, "No receipt file is attached")
+    path = RECEIPT_DIR / snapshot["receipt_storage_name"]
+    if not path.is_file():
+        raise HTTPException(404, "The stored receipt file is missing")
+    return FileResponse(path, media_type=snapshot["receipt_content_type"] or "application/octet-stream",
+                        filename=snapshot["receipt_filename"], content_disposition_type="inline")
+
+
+@app.post("/api/exports/{export_id}/receipt")
+async def save_submission_receipt(export_id: int, declaration_reference: str = Form(""), submission_notes: str = Form(""), file: UploadFile | None = File(None)):
+    snapshot = row("SELECT * FROM export_snapshots WHERE id=? AND organisation_id=?", (export_id, _org_id()))
+    if not snapshot:
+        raise HTTPException(404, "Export not found")
+    reference = declaration_reference.strip()
+    if not reference:
+        raise HTTPException(422, "Enter the declaration or portal receipt reference")
+    filename = storage_name = content_type = ""
+    if file and file.filename:
+        data = await file.read(10 * 1024 * 1024 + 1)
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(413, "Receipt file exceeds 10 MB")
+        signatures = [
+            (b"%PDF-", "application/pdf", ".pdf"), (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
+            (b"\xff\xd8\xff", "image/jpeg", ".jpg"),
+        ]
+        match = next(((mime, extension) for signature, mime, extension in signatures if data.startswith(signature)), None)
+        if not match and data.lstrip().startswith(b"<") and b"<html" not in data[:1000].lower():
+            match = ("application/xml", ".xml")
+        if not match:
+            raise HTTPException(422, "Attach a genuine PDF, PNG, JPEG or XML portal receipt")
+        content_type, extension = match
+        filename = Path(file.filename).name
+        storage_name = uuid.uuid4().hex + extension
+        (RECEIPT_DIR / storage_name).write_bytes(data)
+    old_storage = snapshot.get("receipt_storage_name", "")
+    invoice_ids = json.loads(snapshot["invoice_ids"])
+    now = utc_now()
+    try:
+        with transaction() as connection:
+            connection.execute(
+                """UPDATE export_snapshots SET status='submitted',declaration_reference=?,receipt_filename=CASE WHEN ?='' THEN receipt_filename ELSE ? END,
+                   receipt_storage_name=CASE WHEN ?='' THEN receipt_storage_name ELSE ? END,
+                   receipt_content_type=CASE WHEN ?='' THEN receipt_content_type ELSE ? END,submission_notes=?,submitted_at=? WHERE id=?""",
+                (reference, storage_name, filename, storage_name, storage_name, storage_name, content_type, submission_notes.strip(), now, export_id),
+            )
+            if invoice_ids:
+                placeholders = ",".join("?" for _ in invoice_ids)
+                connection.execute(f"UPDATE invoices SET status='submitted',updated_at=? WHERE id IN ({placeholders})", (now, *invoice_ids))
+            _record_event(connection, None, "submission_receipt_saved", {"export_id": export_id, "reference": reference, "filename": filename})
+    except Exception:
+        if storage_name:
+            (RECEIPT_DIR / storage_name).unlink(missing_ok=True)
+        raise
+    if storage_name and old_storage and old_storage != storage_name:
+        (RECEIPT_DIR / old_storage).unlink(missing_ok=True)
+    return {"saved": True, "receipt_filename": filename or snapshot.get("receipt_filename", ""), "submitted_at": now}
+
+
 @app.post("/api/exports/{export_id}/submitted")
 async def mark_submitted(export_id: int, request: Request):
     body = await request.json()
@@ -1819,7 +1977,7 @@ async def mark_submitted(export_id: int, request: Request):
         raise HTTPException(404, "Export not found")
     invoice_ids = json.loads(snapshot["invoice_ids"])
     with transaction() as connection:
-        connection.execute("UPDATE export_snapshots SET status='submitted',declaration_reference=? WHERE id=?", (reference, export_id))
+        connection.execute("UPDATE export_snapshots SET status='submitted',declaration_reference=?,submitted_at=? WHERE id=?", (reference, utc_now(), export_id))
         if invoice_ids:
             placeholders = ",".join("?" for _ in invoice_ids)
             connection.execute(f"UPDATE invoices SET status='submitted',updated_at=? WHERE id IN ({placeholders})", (utc_now(), *invoice_ids))

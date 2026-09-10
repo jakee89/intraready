@@ -174,7 +174,7 @@ async function loadSuppliers() {
   target.innerHTML = `<div class="panel loading"></div>`;
   try {
     const suppliers = await api("/api/suppliers");
-    target.innerHTML = suppliers.length ? `<article class="panel table-panel"><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Supplier</th><th>Invoices</th><th>Products</th><th>Layout</th><th>Processing</th><th></th></tr></thead><tbody>${suppliers.map(item => `<tr><td><strong>${escapeHtml(item.supplier_name)}</strong><span class="subline">${escapeHtml(item.supplier_vat)}</span></td><td>${item.invoice_count}</td><td>${item.product_count}</td><td>${item.layout_version ? `Version ${item.layout_version} · ${item.template_count} saved` : "No saved layout"}</td><td><span class="subline">${item.local_runs || 0} local · ${item.ai_runs || 0} AI${item.failed_runs ? ` · ${item.failed_runs} failed` : ""}</span></td><td><button class="mini-button" data-open-supplier="${item.id}">Manage</button></td></tr>`).join("")}</tbody></table></div></article>` : `<div class="empty-state"><h2>No suppliers remembered yet</h2><p>Review an invoice and use Remember supplier or save a supplier map. The supplier will then appear here.</p><button class="button primary" data-nav="invoices">Open invoices</button></div>`;
+    target.innerHTML = suppliers.length ? `<article class="panel table-panel"><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Supplier</th><th>Invoices</th><th>Products</th><th>Layout</th><th>Processing</th><th></th></tr></thead><tbody>${suppliers.map(item => `<tr><td><strong>${escapeHtml(item.supplier_name)}</strong><span class="subline">${escapeHtml(item.supplier_vat)}</span></td><td>${item.invoice_count}</td><td>${item.product_count}</td><td>${item.layout_version ? `Version ${item.layout_version} · ${item.template_count} saved${item.drift_count ? `<br><span class="status needs_review">${item.drift_count} changed</span>` : ""}` : "No saved layout"}</td><td><span class="subline">${item.local_runs || 0} local · ${item.ai_runs || 0} AI${item.failed_runs ? ` · ${item.failed_runs} failed` : ""}</span></td><td><button class="mini-button" data-open-supplier="${item.id}">Manage</button></td></tr>`).join("")}</tbody></table></div></article>` : `<div class="empty-state"><h2>No suppliers remembered yet</h2><p>Review an invoice and use Remember supplier or save a supplier map. The supplier will then appear here.</p><button class="button primary" data-nav="invoices">Open invoices</button></div>`;
   } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Suppliers could not be loaded</h2><p>${escapeHtml(error.message)}</p></div>`; }
 }
 
@@ -195,7 +195,7 @@ async function openSupplier(profileId) {
         <label>Nature of transaction<input name="nature_transaction" value="${escapeHtml(supplier.nature_transaction)}"></label>
       </div><div class="form-actions"><button class="button primary" type="submit">Save supplier defaults</button></div></form>
       <article class="panel supplier-section"><div class="section-heading"><span>02</span><div><h3>Layout history</h3><p>Restoring an older version changes future extraction only. Existing reviewed invoices remain unchanged.</p></div></div><div class="template-list">${data.templates.length ? data.templates.map(template => `<div class="template-card ${template.active ? "active" : ""}"><div><strong>Version ${template.version}${template.active ? " · Active" : ""}</strong><p>${escapeHtml(template.source)} · ${escapeHtml(template.created_at.slice(0, 10))} · ${template.region_count} regions</p><div class="field-chip-list">${template.fields.map(field => `<span>${escapeHtml(field.replace("line_", "row ").replaceAll("_", " "))}</span>`).join("")}</div></div>${template.active ? `<span class="status approved">Active</span>` : `<button class="button quiet" data-restore-supplier-template="${template.id}" data-supplier-id="${profileId}">Restore</button>`}</div>`).join("") : `<div class="empty-state compact"><p>No saved layout versions. Open one of this supplier's invoices and choose Map supplier or AI complete form.</p></div>`}</div></article>
-      <article class="panel supplier-section"><div class="section-heading"><span>03</span><div><h3>Recent invoices</h3><p>Use these to check the active layout against real results.</p></div></div><div class="supplier-invoices">${data.invoices.length ? data.invoices.map(invoice => `<button data-open-invoice="${invoice.id}"><div><strong>${escapeHtml(invoice.invoice_number || invoice.filename || "Invoice")}</strong><small>${escapeHtml(formatDate(invoice.invoice_date))}</small></div>${statusChip(invoice.status)}</button>`).join("") : `<p class="subline">No matching invoices were found.</p>`}</div></article>`;
+      <article class="panel supplier-section"><div class="section-heading"><span>03</span><div><h3>Recent invoices</h3><p>Use these to check the active layout against real results.</p></div></div><div class="supplier-invoices">${data.invoices.length ? data.invoices.map(invoice => `<button data-open-invoice="${invoice.id}"><div><strong>${escapeHtml(invoice.invoice_number || invoice.filename || "Invoice")}</strong><small>${escapeHtml(formatDate(invoice.invoice_date))}${["changed", "check"].includes(invoice.layout_status) ? " · Layout check needed" : ""}</small></div>${statusChip(invoice.status)}</button>`).join("") : `<p class="subline">No matching invoices were found.</p>`}</div></article>`;
   } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Supplier could not be opened</h2><p>${escapeHtml(error.message)}</p><button class="button secondary" data-back-suppliers>Back</button></div>`; }
 }
 
@@ -215,7 +215,7 @@ function renderInvoiceTable() {
   const filter = $("#invoiceFilter")?.value || "all";
   const invoices = state.bootstrap.invoices.filter(item => filter === "all" || item.status === filter || (filter === "needs_review" && item.status === "draft"));
   target.innerHTML = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" id="selectAllInvoices" aria-label="Select all visible invoices"></th><th>Supplier / reference</th><th>Movement date</th><th>Goods rows</th><th>Total</th><th>Issues</th><th>Status</th><th>Actions</th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => `
-    <tr data-open-invoice="${invoice.id}" tabindex="0"><td><input type="checkbox" data-select-invoice="${invoice.id}" ${state.selectedInvoices.has(invoice.id) ? "checked" : ""} ${!invoice.document_id || ["exported", "submitted"].includes(invoice.status) ? "disabled" : ""} aria-label="Select invoice"></td><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}${invoice.correction_number ? ` · Correction ${invoice.correction_number}` : ""}</span></td>
+    <tr data-open-invoice="${invoice.id}" tabindex="0"><td><input type="checkbox" data-select-invoice="${invoice.id}" ${state.selectedInvoices.has(invoice.id) ? "checked" : ""} ${!invoice.document_id || ["exported", "submitted"].includes(invoice.status) ? "disabled" : ""} aria-label="Select invoice"></td><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}${invoice.correction_number ? ` · Correction ${invoice.correction_number}` : ""}</span>${["changed", "check"].includes(invoice.layout_status) ? `<span class="status needs_review">Layout check</span>` : ""}</td>
     <td>${escapeHtml(formatDate(invoice.arrival_date))}</td><td>${invoice.goods_count}</td><td class="amount">${formatMoney(invoice.total_value, invoice.currency)}</td>
     <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td><td>${["exported", "submitted"].includes(invoice.status) ? "Locked" : `<button class="mini-button delete" data-delete-invoice="${invoice.id}" aria-label="Delete invoice ${escapeHtml(invoice.invoice_number || "draft")}">Delete</button>`}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="8">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
   updateBatchAiButton();
@@ -280,10 +280,11 @@ function invoiceInput(field, label, tip, invoice) {
   }
   let type = "text";
   if (field.endsWith("_date")) type = "date";
-  if (field === "flow") return `<label>${label} <span class="tip" data-tip="${escapeHtml(tip)}">?</span><select data-invoice-field="${field}"><option value="A" ${invoice[field]==="A"?"selected":""}>A · Arrivals</option><option value="D" ${invoice[field]==="D"?"selected":""}>D · Dispatches</option></select></label>`;
-  if (field === "mode_transport") return `<label>${label} <span class="tip" data-tip="${escapeHtml(tip)}">?</span><select data-invoice-field="${field}">${[["1","1 · Sea"],["2","2 · Rail"],["3","3 · Road"],["4","4 · Air / courier"],["5","5 · Post"],["7","7 · Fixed installation"],["8","8 · Inland waterway"],["9","9 · Own propulsion"]].map(([v,l]) => `<option value="${v}" ${invoice[field]===v?"selected":""}>${l}</option>`).join("")}</select></label>`;
-  if (field === "nature_transaction") return `<label>${label} <span class="tip" data-tip="${escapeHtml(tip)}">?</span><input data-invoice-field="${field}" value="${escapeHtml(invoice[field] || "")}" inputmode="numeric" maxlength="2" placeholder="e.g. 11"></label>`;
-  return `<label>${label} <span class="tip" data-tip="${escapeHtml(tip)}">?</span><input data-invoice-field="${field}" type="${type}" value="${escapeHtml(invoice[field])}"></label>`;
+  const heading = `<span class="field-label"><span>${label} <span class="tip" data-tip="${escapeHtml(tip)}">?</span></span><button type="button" class="evidence-link" data-evidence-field="${field}" title="Show the source in the invoice PDF">Source</button></span>`;
+  if (field === "flow") return `<label>${heading}<select data-invoice-field="${field}"><option value="A" ${invoice[field]==="A"?"selected":""}>A · Arrivals</option><option value="D" ${invoice[field]==="D"?"selected":""}>D · Dispatches</option></select></label>`;
+  if (field === "mode_transport") return `<label>${heading}<select data-invoice-field="${field}">${[["1","1 · Sea"],["2","2 · Rail"],["3","3 · Road"],["4","4 · Air / courier"],["5","5 · Post"],["7","7 · Fixed installation"],["8","8 · Inland waterway"],["9","9 · Own propulsion"]].map(([v,l]) => `<option value="${v}" ${invoice[field]===v?"selected":""}>${l}</option>`).join("")}</select></label>`;
+  if (field === "nature_transaction") return `<label>${heading}<input data-invoice-field="${field}" value="${escapeHtml(invoice[field] || "")}" inputmode="numeric" maxlength="2" placeholder="e.g. 11"></label>`;
+  return `<label>${heading}<input data-invoice-field="${field}" type="${type}" value="${escapeHtml(invoice[field])}"></label>`;
 }
 
 function renderReview() {
@@ -305,6 +306,7 @@ function renderReview() {
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
         ${locked || invoice.source_invoice ? `<article class="info-card slim revision-banner"><span class="info-icon">${locked ? "🔒" : "↺"}</span><div><strong>${locked ? "Locked declaration record" : `Correction draft ${invoice.correction_number}`}</strong><p>${locked ? "This invoice was included in an export and is read-only. Create a correction draft to change it without altering the saved declaration." : `Based on ${escapeHtml(invoice.source_invoice?.invoice_number || "the original exported invoice")}. Review every copied row before approval.`}</p>${invoice.corrections?.length ? `<p>${invoice.corrections.length} correction draft${invoice.corrections.length === 1 ? "" : "s"} recorded.</p>` : ""}</div></article>` : ""}
+        ${["changed", "check"].includes(invoice.layout_status) ? `<article class="info-card slim layout-drift-card"><span class="info-icon">!</span><div><strong>Supplier layout needs checking</strong><p>${escapeHtml(invoice.layout_message)}</p><button class="mini-button" data-open-layout-comparison>Compare saved layout with this PDF</button></div></article>` : ""}
         <article class="panel review-section"><div class="section-title"><div><h3>Invoice and shipment</h3><p>Fields save when you leave them.</p></div></div><div class="form-grid">${invoiceFields.map(fields => invoiceInput(...fields, invoice)).join("")}</div>
           <label class="wide notes-label">Notes<textarea data-invoice-field="notes" rows="2">${escapeHtml(invoice.notes)}</textarea></label>
         </article>
@@ -346,7 +348,7 @@ function lineRow(line, allLines, issueLines) {
     <td>${line.line_kind === "goods" && supplementaryUnit ? `<div class="required-inline"><input data-line-id="${line.id}" data-line-field="supp_qty" value="${escapeHtml(line.supp_qty)}" inputmode="decimal" placeholder="Required" title="Supplementary quantity required by CN ${escapeHtml(line.hs_code)}"><strong>${escapeHtml(supplementaryUnit)}</strong></div>` : `<span class="subline">Not required</span>`}</td>
     <td>${line.line_kind === "goods" && specialRequired ? `<div class="extra-field-stack"><label>Quantity<input data-line-id="${line.id}" data-line-field="special_quantity" value="${escapeHtml(line.special_quantity)}" inputmode="decimal"></label><label>Range<input data-line-id="${line.id}" data-line-field="range_value" value="${escapeHtml(line.range_value)}"></label>${line.hs_code === "84191900" ? `<label>Collector type<input data-line-id="${line.id}" data-line-field="collector_type" value="${escapeHtml(line.collector_type)}"></label>` : ""}</div>` : `<span class="subline">Not required</span>`}</td>
     <td><input type="checkbox" data-review-line="${line.id}" ${state.pendingReviews.has(line.id) ? (state.pendingReviews.get(line.id) ? "checked" : "") : (line.reviewed ? "checked" : "")} aria-label="Mark row reviewed"></td>
-    <td><div class="row-actions"><button class="mini-button" data-edit-line="${line.id}" title="Edit all row fields">Details</button>${line.line_kind==="goods" ? `<button class="mini-button" data-suggest-cn="${line.id}" title="Search official CN descriptions and rank them with API AI">Suggest CN</button><button class="mini-button" data-remember-line="${line.id}" title="Save verified product facts for this supplier and SKU">Remember</button>` : ""}<button class="mini-button delete" data-delete-line="${line.id}">Delete</button></div><small class="subline">Page ${line.source_page || "—"}</small></td>
+    <td><div class="row-actions"><button class="mini-button" data-evidence-line="${line.id}" title="Highlight this row in the source PDF">Source</button><button class="mini-button" data-edit-line="${line.id}" title="Edit all row fields">Details</button>${line.line_kind==="goods" ? `<button class="mini-button" data-suggest-cn="${line.id}" title="Search official CN descriptions and rank them with API AI">Suggest CN</button><button class="mini-button" data-remember-line="${line.id}" title="Save verified product facts for this supplier and SKU">Remember</button>` : ""}<button class="mini-button delete" data-delete-line="${line.id}">Delete</button></div><small class="subline">Page ${line.source_page || "—"} · ${escapeHtml(line.confidence || "unknown")}</small></td>
   </tr>`;
 }
 
@@ -509,7 +511,43 @@ async function loadExports() {
   try {
     state.exports = await api("/api/exports");
     const target = $("#exportHistory");
-    target.innerHTML = state.exports.length ? `<article class="panel export-history"><div class="panel-head"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Export history</h2></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Created</th><th>Period</th><th>Flow</th><th>Format</th><th>Rows</th><th>Status / receipt</th></tr></thead><tbody>${state.exports.map(item => `<tr><td>${escapeHtml(formatDate(item.created_at.slice(0,10)))}</td><td>${escapeHtml(item.period)}</td><td>${item.flow === "A" ? "Arrivals" : "Dispatches"}</td><td>${escapeHtml(item.format.toUpperCase())}</td><td>${item.row_count}</td><td>${item.status === "submitted" ? `<strong>${escapeHtml(item.declaration_reference)}</strong><span class="subline">Submitted</span>` : `<button class="mini-button" data-mark-submitted="${item.id}">Record portal receipt</button>`}</td></tr>`).join("")}</tbody></table></div></article>` : "";
+    target.innerHTML = state.exports.length ? `<article class="panel export-history"><div class="panel-head"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Export history</h2></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Created</th><th>Period</th><th>Flow</th><th>Format</th><th>Rows</th><th>Status / receipt</th></tr></thead><tbody>${state.exports.map(item => `<tr><td>${escapeHtml(formatDate(item.created_at.slice(0,10)))}</td><td>${escapeHtml(item.period)}</td><td>${item.flow === "A" ? "Arrivals" : "Dispatches"}</td><td>${escapeHtml(item.format.toUpperCase())}</td><td>${item.row_count}</td><td>${item.status === "submitted" ? `<strong>${escapeHtml(item.declaration_reference)}</strong><span class="subline">Submitted${item.submitted_at ? ` · ${escapeHtml(formatDate(item.submitted_at.slice(0,10)))}` : ""}</span><div class="receipt-actions">${item.receipt_storage_name ? `<a class="mini-button" href="/api/exports/${item.id}/receipt" target="_blank" rel="noopener">View receipt</a>` : ""}<button class="mini-button" data-record-receipt="${item.id}">Update</button></div>` : `<button class="mini-button" data-record-receipt="${item.id}">Record portal receipt</button>`}</td></tr>`).join("")}</tbody></table></div></article>` : "";
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function openReceiptDialog(exportId) {
+  const item = state.exports.find(entry => entry.id === Number(exportId));
+  const form = $("#receiptForm");
+  form.reset();
+  form.elements.declaration_reference.value = item?.declaration_reference || "";
+  form.elements.submission_notes.value = item?.submission_notes || "";
+  $("#receiptDialog").dataset.exportId = exportId;
+  $("#receiptDialog").showModal();
+}
+
+async function showEvidence(field = "", lineId = "") {
+  if (!state.currentInvoice?.document) return toast("This invoice has no PDF evidence.", "error");
+  const query = lineId ? `line_id=${encodeURIComponent(lineId)}` : `field=${encodeURIComponent(field)}`;
+  try {
+    const evidence = await api(`/api/invoices/${state.currentInvoice.id}/evidence?${query}`);
+    $("#evidenceTitle").textContent = evidence.label || "Invoice evidence";
+    $("#evidenceMessage").innerHTML = `<strong>${escapeHtml(evidence.source || "Source")}</strong> · Page ${escapeHtml(evidence.page || "—")}<br>${escapeHtml(evidence.message || "")}`;
+    $("#evidenceDialog").showModal();
+    const image = new Image();
+    image.onload = () => {
+      const canvas = $("#evidenceCanvas");
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      context.lineWidth = Math.max(4, canvas.width / 300); context.strokeStyle = "#e32636";
+      context.fillStyle = "rgba(227,38,54,.13)";
+      (evidence.boxes || []).forEach(box => {
+        const x = box.x * canvas.width, y = box.y * canvas.height;
+        const width = box.width * canvas.width, height = box.height * canvas.height;
+        context.fillRect(x, y, width, height); context.strokeRect(x, y, width, height);
+      });
+    };
+    image.src = `/api/documents/${evidence.document_id}/pages/${evidence.page}.png`;
   } catch (error) { toast(error.message, "error"); }
 }
 
@@ -572,7 +610,10 @@ async function openSupplierMapping() {
   try {
     const [source, history] = await Promise.all([api(`/api/invoices/${state.currentInvoice.id}/supplier-mapping`), api(`/api/invoices/${state.currentInvoice.id}/supplier-templates`)]);
     state.mapping = { regions: source.regions || [], page: 1, pageCount: source.page_count || 1, documentId: source.document_id, image: null, start: null, draft: null, pointerId: null };
-    $("#mappingStatus").textContent = "Drag a box around the value";
+    $("#mappingStatus").textContent = source.layout_message || "Drag a box around the value";
+    $("#mappingPreview").innerHTML = ["changed", "check"].includes(source.layout_status)
+      ? `<strong>Layout comparison:</strong> The red saved boxes are now shown over this invoice. Check that each box still covers the correct field, preview the extracted rows, then save a new version if correct.`
+      : "Draw a box to preview the extracted text.";
     $("#mappingHistory").innerHTML = `<strong>Saved layout versions</strong>${history.length ? history.map(item => `<div class="mapping-history-row"><span>Version ${item.version} · ${escapeHtml(item.source)} · ${escapeHtml(item.created_at.slice(0,10))}${item.active ? " · Active" : ""}</span>${item.active ? "" : `<button class="mini-button" data-activate-template="${item.id}">Restore</button>`}</div>`).join("") : `<p class="subline">No saved versions yet.</p>`}`;
     $("#supplierMapDialog").showModal(); renderMapping();
   } catch (error) { toast(error.message, "error"); }
@@ -690,7 +731,12 @@ document.addEventListener("click", async event => {
     } catch (error) { button.textContent = "AI unavailable"; toast(error.message, "error"); }
     button.disabled = false; return;
   }
-  if (event.target.closest("#mapSupplierButton")) { openSupplierMapping(); return; }
+  if (event.target.closest("#mapSupplierButton") || event.target.closest("[data-open-layout-comparison]")) { openSupplierMapping(); return; }
+  const evidenceField = event.target.closest("[data-evidence-field]");
+  if (evidenceField) { showEvidence(evidenceField.dataset.evidenceField); return; }
+  const evidenceLine = event.target.closest("[data-evidence-line]");
+  if (evidenceLine) { showEvidence("", evidenceLine.dataset.evidenceLine); return; }
+  if (event.target.closest("[data-close-evidence]")) { $("#evidenceDialog").close(); return; }
   const activateTemplate = event.target.closest("[data-activate-template]");
   if (activateTemplate) {
     try { await api(`/api/invoices/${state.currentInvoice.id}/supplier-templates/${activateTemplate.dataset.activateTemplate}/activate`, { method: "POST" }); toast("Earlier supplier layout restored"); await openSupplierMapping(); }
@@ -818,14 +864,9 @@ document.addEventListener("click", async event => {
   if (event.target.closest("#previewButton")) { buildDeclarationPreview(); return; }
   if (event.target.closest("#downloadCsv")) { downloadExport("csv"); return; }
   if (event.target.closest("#downloadXml")) { downloadExport("xml"); return; }
-  const markSubmitted = event.target.closest("[data-mark-submitted]");
-  if (markSubmitted) {
-    const reference = prompt("Enter the declaration or receipt reference shown by the portal:");
-    if (!reference) return;
-    try { await api(`/api/exports/${markSubmitted.dataset.markSubmitted}/submitted`, { method: "POST", body: JSON.stringify({ declaration_reference: reference }) }); await refreshBootstrap(); await loadExports(); toast("Portal receipt recorded"); }
-    catch (error) { toast(error.message, "error"); }
-    return;
-  }
+  const recordReceipt = event.target.closest("[data-record-receipt]");
+  if (recordReceipt) { openReceiptDialog(recordReceipt.dataset.recordReceipt); return; }
+  if (event.target.closest("[data-close-receipt]")) { $("#receiptDialog").close(); return; }
 });
 
 document.addEventListener("change", event => {
@@ -936,6 +977,18 @@ $("#catalogueForm").addEventListener("submit", async event => {
   if (event.submitter?.value === "cancel") { $("#catalogueDialog").close(); return; }
   try { await api("/api/catalogue", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); $("#catalogueDialog").close(); await refreshBootstrap(); loadCatalogue(); toast("Product saved"); }
   catch (error) { toast(error.message, "error"); }
+});
+
+$("#receiptForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const exportId = $("#receiptDialog").dataset.exportId;
+  const button = event.submitter;
+  if (button) { button.disabled = true; button.textContent = "Saving…"; }
+  try {
+    await api(`/api/exports/${exportId}/receipt`, { method: "POST", body: new FormData(event.currentTarget) });
+    $("#receiptDialog").close(); await refreshBootstrap(); await loadExports(); toast("Portal receipt and submission saved");
+  } catch (error) { toast(error.message, "error"); }
+  finally { if (button) { button.disabled = false; button.textContent = "Save submission"; } }
 });
 
 $("#profileForm").addEventListener("submit", async event => {

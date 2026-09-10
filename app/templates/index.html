@@ -275,6 +275,26 @@
     <div class="form-actions"><button class="button quiet" data-close-mapping>Cancel</button><button id="previewMappingButton" class="button secondary">Preview extracted rows</button><button id="saveMappingButton" class="button primary">Save supplier map</button></div>
   </dialog>
 
+  <dialog id="evidenceDialog" class="modal evidence-modal">
+    <div class="modal-head"><div><p class="eyebrow">SOURCE EVIDENCE</p><h2 id="evidenceTitle">Invoice evidence</h2></div><button class="icon-button" data-close-evidence aria-label="Close">×</button></div>
+    <div id="evidenceMessage" class="mapping-preview"></div>
+    <div class="evidence-canvas-wrap"><canvas id="evidenceCanvas"></canvas></div>
+    <div class="form-actions"><button class="button quiet" data-close-evidence>Close</button></div>
+  </dialog>
+
+  <dialog id="receiptDialog" class="modal">
+    <form id="receiptForm">
+      <div class="modal-head"><div><p class="eyebrow">NSO SUBMISSION</p><h2>Record portal receipt</h2></div><button class="icon-button" type="button" data-close-receipt aria-label="Close">×</button></div>
+      <p>Save the reference shown by the portal and optionally attach its PDF, image or XML receipt.</p>
+      <div class="form-grid">
+        <label class="wide">Declaration / receipt reference<input name="declaration_reference" required></label>
+        <label class="wide">Receipt file <span class="optional">PDF, PNG, JPEG or XML; maximum 10 MB</span><input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.xml,application/pdf,image/png,image/jpeg,application/xml,text/xml"></label>
+        <label class="wide">Submission notes<textarea name="submission_notes" rows="3"></textarea></label>
+      </div>
+      <div class="form-actions"><button class="button quiet" type="button" data-close-receipt>Cancel</button><button class="button primary" type="submit">Save submission</button></div>
+    </form>
+  </dialog>
+
   <dialog id="accountDialog" class="modal">
     <form id="accountForm" method="dialog">
       <div class="modal-head"><div><p class="eyebrow">NEW ACCOUNT</p><h2>Add a team member</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>

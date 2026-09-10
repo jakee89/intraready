@@ -201,6 +201,9 @@ CREATE TABLE IF NOT EXISTS invoices (
     revision INTEGER NOT NULL DEFAULT 1,
     parent_invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
     correction_number INTEGER NOT NULL DEFAULT 0,
+    layout_status TEXT NOT NULL DEFAULT 'unknown',
+    layout_message TEXT NOT NULL DEFAULT '',
+    detected_layout_fingerprint TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -331,6 +334,10 @@ CREATE TABLE IF NOT EXISTS export_snapshots (
     status TEXT NOT NULL DEFAULT 'exported',
     declaration_reference TEXT NOT NULL DEFAULT '',
     receipt_filename TEXT NOT NULL DEFAULT '',
+    receipt_storage_name TEXT NOT NULL DEFAULT '',
+    receipt_content_type TEXT NOT NULL DEFAULT '',
+    submission_notes TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -394,7 +401,15 @@ def init_db() -> None:
             connection.execute("ALTER TABLE invoices ADD COLUMN parent_invoice_id INTEGER")
         if "correction_number" not in invoice_columns:
             connection.execute("ALTER TABLE invoices ADD COLUMN correction_number INTEGER NOT NULL DEFAULT 0")
+        for column in ("layout_status", "layout_message", "detected_layout_fingerprint"):
+            if column not in invoice_columns:
+                default = "unknown" if column == "layout_status" else ""
+                connection.execute(f"ALTER TABLE invoices ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_invoice_parent ON invoices(organisation_id,parent_invoice_id)")
+        export_columns = {item[1] for item in connection.execute("PRAGMA table_info(export_snapshots)")}
+        for column in ("receipt_storage_name", "receipt_content_type", "submission_notes", "submitted_at"):
+            if column not in export_columns:
+                connection.execute(f"ALTER TABLE export_snapshots ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         supplier_columns = {item[1] for item in connection.execute("PRAGMA table_info(supplier_profiles)")}
         if "layout_mapping" not in supplier_columns:
             connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_mapping TEXT NOT NULL DEFAULT ''")

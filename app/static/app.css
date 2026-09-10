@@ -317,6 +317,14 @@ select:focus, input:focus, textarea:focus { border-color: var(--teal); }
 .mapping-region-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .mapping-history { width: min(100%, 1050px); margin: 14px auto 0; padding-top: 12px; border-top: 1px solid var(--line); }
 .mapping-history-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 7px 0; }
+.field-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.evidence-link { padding: 2px 6px; border: 0; border-radius: 6px; color: var(--teal-dark); background: var(--mint); font: inherit; font-size: .65rem; font-weight: 800; cursor: pointer; }
+.evidence-link:hover { background: #ccebe2; }
+.evidence-modal { width: min(1100px, calc(100vw - 30px)); padding: 22px; overflow: auto; }
+.evidence-canvas-wrap { max-height: 65vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: #e8ecea; }
+#evidenceCanvas { display: block; width: 100%; height: auto; background: white; }
+.layout-drift-card { border-color: #e8bf72; background: var(--amber-bg); }
+.receipt-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 .toast-region { position: fixed; z-index: 100; right: 22px; bottom: 22px; display: grid; gap: 9px; }
 .toast { width: min(360px, calc(100vw - 44px)); padding: 13px 15px; border-radius: 12px; color: white; background: #213b36; box-shadow: var(--shadow); animation: toastIn .2s ease-out; }
 .toast.error { background: #773c37; }
