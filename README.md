@@ -32,6 +32,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Remembered unit net weight with automatic total-row weight calculation
 - Safe combination of equivalent colour or description variants
 - Arrival and dispatch flows with period preview based on the actual movement date
+- Monthly declaration workspace with included/excluded invoices, blocking reasons, grouped totals, previous-month comparison and export attempts
 - Supplementary quantity and special commodity fields where the Malta format requires them
 - Export history with a place to record the NSO portal receipt reference
 - Internal review CSV containing invoice references

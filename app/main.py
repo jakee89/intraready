@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.14.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.15.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -1561,17 +1561,101 @@ def _approved_for_period(period: str, flow: str) -> tuple[list[dict], dict[int, 
     return invoices, lines_by_invoice, profile
 
 
+def _previous_period(period: str) -> str:
+    year, month = (int(part) for part in period.split("-"))
+    return f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
+
+
+def _summarise_declaration(result_rows: list[dict]) -> dict:
+    totals = {
+        "invoice_value": sum(int(item["INVOICE_VALUE"]) for item in result_rows),
+        "statistical_value": sum(int(item["STAT_VALUE"]) for item in result_rows),
+        "net_mass": sum(int(item["NET_MASS"]) for item in result_rows),
+    }
+
+    def grouped(field: str, label: str) -> list[dict]:
+        buckets: dict[str, dict] = {}
+        for item in result_rows:
+            value = str(item.get(field) or "Not set")
+            bucket = buckets.setdefault(value, {
+                "key": value, label: value, "rows": 0,
+                "invoice_value": 0, "statistical_value": 0, "net_mass": 0,
+            })
+            bucket["rows"] += 1
+            bucket["invoice_value"] += int(item["INVOICE_VALUE"])
+            bucket["statistical_value"] += int(item["STAT_VALUE"])
+            bucket["net_mass"] += int(item["NET_MASS"])
+        return sorted(buckets.values(), key=lambda item: (-item["invoice_value"], item["key"]))
+
+    return {
+        "totals": totals,
+        "by_cn": grouped("HS_Code", "cn_code"),
+        "by_country": grouped("COC", "country"),
+        "by_supplier": grouped("_supplier", "supplier"),
+    }
+
+
+def _invoice_preview_summaries(invoices: list[dict], result_rows: list[dict]) -> list[dict]:
+    by_invoice: dict[int, list[dict]] = {}
+    for item in result_rows:
+        by_invoice.setdefault(item["_invoice_id"], []).append(item)
+    return [{
+        "id": invoice["id"], "supplier": invoice["supplier_name"],
+        "invoice_number": invoice["invoice_number"], "status": invoice["status"],
+        "row_count": len(by_invoice.get(invoice["id"], [])),
+        "invoice_value": sum(int(item["INVOICE_VALUE"]) for item in by_invoice.get(invoice["id"], [])),
+    } for invoice in invoices]
+
+
 @app.get("/api/declarations/{period}")
 def declaration_preview(period: str, flow: str = "A"):
     invoices, lines_by_invoice, profile = _approved_for_period(period, flow)
     result_rows = declaration_rows(invoices, lines_by_invoice, profile, period)
+    summary = _summarise_declaration(result_rows)
+    all_period_invoices = rows(
+        "SELECT * FROM invoices WHERE organisation_id=? AND arrival_date LIKE ? AND flow=? ORDER BY id",
+        (_org_id(), period + "%", flow),
+    )
+    included_ids = {invoice["id"] for invoice in invoices}
+    excluded = []
+    for invoice in all_period_invoices:
+        if invoice["id"] in included_ids:
+            continue
+        if invoice["status"] == "submitted":
+            reasons = ["Already submitted and kept out of a new export."]
+        else:
+            invoice_readiness = readiness(invoice, _lines(invoice["id"]), profile)
+            reasons = list(dict.fromkeys(
+                issue["message"] for issue in invoice_readiness["issues"] if issue["severity"] == "blocking"
+            ))[:4]
+            if not reasons:
+                reasons = [f"Status is {invoice['status'].replace('_', ' ')}."]
+        excluded.append({
+            "id": invoice["id"], "supplier": invoice["supplier_name"],
+            "invoice_number": invoice["invoice_number"], "status": invoice["status"], "reasons": reasons,
+        })
+
+    previous = _previous_period(period)
+    previous_invoices = rows(
+        "SELECT * FROM invoices WHERE organisation_id=? AND arrival_date LIKE ? AND flow=? AND status IN ('approved','exported','submitted') ORDER BY id",
+        (_org_id(), previous + "%", flow),
+    )
+    previous_lines = {invoice["id"]: _lines(invoice["id"]) for invoice in previous_invoices}
+    previous_rows = declaration_rows(previous_invoices, previous_lines, profile, previous)
+    previous_summary = _summarise_declaration(previous_rows)
+    attempts = rows(
+        "SELECT id,format,row_count,status,declaration_reference,created_at FROM export_snapshots WHERE organisation_id=? AND period=? AND flow=? ORDER BY created_at DESC",
+        (_org_id(), period, flow),
+    )
     return {
         "period": period, "flow": flow, "rows": result_rows, "invoice_count": len(invoices),
         "row_count": len(result_rows), "schema": inspect_schema(SCHEMA_PATH),
-        "totals": {
-            "invoice_value": sum(int(item["INVOICE_VALUE"]) for item in result_rows),
-            "statistical_value": sum(int(item["STAT_VALUE"]) for item in result_rows),
-            "net_mass": sum(int(item["NET_MASS"]) for item in result_rows),
+        "totals": summary["totals"], "groups": {key: summary[key] for key in ("by_cn", "by_country", "by_supplier")},
+        "included_invoices": _invoice_preview_summaries(invoices, result_rows),
+        "excluded_invoices": excluded, "export_attempts": attempts,
+        "previous": {
+            "period": previous, "invoice_count": len(previous_invoices), "row_count": len(previous_rows),
+            "totals": previous_summary["totals"],
         },
     }
 
