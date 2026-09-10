@@ -12,7 +12,7 @@ from .ai_control import budget_available, get_ai_config, record_usage
 
 
 FIELDS = ["invoice_number", "invoice_date", "total_value", "supplier_name", "supplier_vat_number", "currency",
-          "terms_delivery", "line_sku", "line_description", "line_quantity", "line_unit", "line_hs_code",
+          "terms_delivery", "mode_transport", "flow", "nature_transaction", "line_sku", "line_description", "line_quantity", "line_unit", "line_hs_code",
           "line_origin_country", "line_consignment_country", "line_invoice_value", "line_unit_net_mass"]
 
 LINE_SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
@@ -35,9 +35,10 @@ INVOICE_SCHEMA = {"type": "object", "additionalProperties": False, "properties":
     "supplier_vat_number": {"type": "string"}, "invoice_number": {"type": "string"},
     "invoice_date": {"type": "string"}, "currency": {"type": "string"}, "total_value": {"type": "string"},
     "consignment_country": {"type": "string"}, "terms_delivery": {"type": "string"},
+    "mode_transport": {"type": "string"}, "flow": {"type": "string"}, "nature_transaction": {"type": "string"},
     "lines": {"type": "array", "items": LINE_SCHEMA}, "layout_regions": {"type": "array", "items": REGION_SCHEMA}},
     "required": ["supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number", "invoice_date",
-                 "currency", "total_value", "consignment_country", "terms_delivery", "lines", "layout_regions"]}
+                 "currency", "total_value", "consignment_country", "terms_delivery", "mode_transport", "flow", "nature_transaction", "lines", "layout_regions"]}
 
 _LAST = {"error_code": "", "error": "", "request_id": ""}
 
@@ -118,6 +119,7 @@ Classify goods; printing/engraving/logo/setup/handling/packaging charges; freigh
 Freight must always be a separate freight row even when outside the goods table. Invoice value is the extended line total.
 Country of consignment belongs to each goods row/order. Extract it per line when different orders ship from different EU countries; use the invoice-level value only as a default.
 Convert unit grams to kg. Never invent missing values. Use empty strings when unsupported.
+For mode_transport use only 1,2,3,4,5,7,8 or 9 when the invoice provides transport evidence. Use flow A or D and a two-digit nature_transaction only when supported; otherwise return an empty string.
 Also return reusable normalized page regions (0 to 1 from page top-left) for visible fixed values and full repeating data columns.
 Exclude headings and totals from repeating column regions. Include only regions you can locate reliably."""
     payload = {"model": config["model"], "store": False, "instructions": instructions,

@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.12.1", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.13.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -1028,7 +1028,8 @@ def extract_again(invoice_id: int, use_ai: bool = False):
     if not draft["lines"]:
         raise HTTPException(503, draft["notes"])
     extraction_fields = ("supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number",
-                         "invoice_date", "currency", "total_value", "consignment_country", "mode_transport", "terms_delivery")
+                         "invoice_date", "currency", "total_value", "consignment_country", "mode_transport",
+                         "terms_delivery", "flow", "nature_transaction")
     updates = {field: draft[field] for field in extraction_fields if draft.get(field)}
     updates["notes"] = draft["notes"]
     now = utc_now()

@@ -5,6 +5,7 @@ const state = {
   exports: [],
   declaration: null,
   pendingReviews: new Map(),
+  selectedInvoices: new Set(),
   allocationPreview: null,
   mapping: { regions: [], page: 1, pageCount: 1, documentId: null, image: null, start: null, draft: null, pointerId: null },
   page: "dashboard",
@@ -193,7 +194,7 @@ async function openSupplier(profileId) {
         <label>Delivery terms<input name="terms_delivery" maxlength="3" value="${escapeHtml(supplier.terms_delivery)}"></label>
         <label>Nature of transaction<input name="nature_transaction" value="${escapeHtml(supplier.nature_transaction)}"></label>
       </div><div class="form-actions"><button class="button primary" type="submit">Save supplier defaults</button></div></form>
-      <article class="panel supplier-section"><div class="section-heading"><span>02</span><div><h3>Layout history</h3><p>Restoring an older version changes future extraction only. Existing reviewed invoices remain unchanged.</p></div></div><div class="template-list">${data.templates.length ? data.templates.map(template => `<div class="template-card ${template.active ? "active" : ""}"><div><strong>Version ${template.version}${template.active ? " · Active" : ""}</strong><p>${escapeHtml(template.source)} · ${escapeHtml(template.created_at.slice(0, 10))} · ${template.region_count} regions</p><div class="field-chip-list">${template.fields.map(field => `<span>${escapeHtml(field.replace("line_", "row ").replaceAll("_", " "))}</span>`).join("")}</div></div>${template.active ? `<span class="status approved">Active</span>` : `<button class="button quiet" data-restore-supplier-template="${template.id}" data-supplier-id="${profileId}">Restore</button>`}</div>`).join("") : `<div class="empty-state compact"><p>No saved layout versions. Open one of this supplier's invoices and choose Map supplier or Learn layout with AI.</p></div>`}</div></article>
+      <article class="panel supplier-section"><div class="section-heading"><span>02</span><div><h3>Layout history</h3><p>Restoring an older version changes future extraction only. Existing reviewed invoices remain unchanged.</p></div></div><div class="template-list">${data.templates.length ? data.templates.map(template => `<div class="template-card ${template.active ? "active" : ""}"><div><strong>Version ${template.version}${template.active ? " · Active" : ""}</strong><p>${escapeHtml(template.source)} · ${escapeHtml(template.created_at.slice(0, 10))} · ${template.region_count} regions</p><div class="field-chip-list">${template.fields.map(field => `<span>${escapeHtml(field.replace("line_", "row ").replaceAll("_", " "))}</span>`).join("")}</div></div>${template.active ? `<span class="status approved">Active</span>` : `<button class="button quiet" data-restore-supplier-template="${template.id}" data-supplier-id="${profileId}">Restore</button>`}</div>`).join("") : `<div class="empty-state compact"><p>No saved layout versions. Open one of this supplier's invoices and choose Map supplier or AI complete form.</p></div>`}</div></article>
       <article class="panel supplier-section"><div class="section-heading"><span>03</span><div><h3>Recent invoices</h3><p>Use these to check the active layout against real results.</p></div></div><div class="supplier-invoices">${data.invoices.length ? data.invoices.map(invoice => `<button data-open-invoice="${invoice.id}"><div><strong>${escapeHtml(invoice.invoice_number || invoice.filename || "Invoice")}</strong><small>${escapeHtml(formatDate(invoice.invoice_date))}</small></div>${statusChip(invoice.status)}</button>`).join("") : `<p class="subline">No matching invoices were found.</p>`}</div></article>`;
   } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Supplier could not be opened</h2><p>${escapeHtml(error.message)}</p><button class="button secondary" data-back-suppliers>Back</button></div>`; }
 }
@@ -213,10 +214,34 @@ function renderInvoiceTable() {
   if (!target || !state.bootstrap) return;
   const filter = $("#invoiceFilter")?.value || "all";
   const invoices = state.bootstrap.invoices.filter(item => filter === "all" || item.status === filter || (filter === "needs_review" && item.status === "draft"));
-  target.innerHTML = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Supplier / reference</th><th>Movement date</th><th>Goods rows</th><th>Total</th><th>Issues</th><th>Status</th><th>Actions</th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => `
-    <tr data-open-invoice="${invoice.id}" tabindex="0"><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}</span></td>
+  target.innerHTML = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" id="selectAllInvoices" aria-label="Select all visible invoices"></th><th>Supplier / reference</th><th>Movement date</th><th>Goods rows</th><th>Total</th><th>Issues</th><th>Status</th><th>Actions</th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => `
+    <tr data-open-invoice="${invoice.id}" tabindex="0"><td><input type="checkbox" data-select-invoice="${invoice.id}" ${state.selectedInvoices.has(invoice.id) ? "checked" : ""} ${!invoice.document_id || invoice.status === "submitted" ? "disabled" : ""} aria-label="Select invoice"></td><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}</span></td>
     <td>${escapeHtml(formatDate(invoice.arrival_date))}</td><td>${invoice.goods_count}</td><td class="amount">${formatMoney(invoice.total_value, invoice.currency)}</td>
-    <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td><td>${invoice.status === "submitted" ? "—" : `<button class="mini-button delete" data-delete-invoice="${invoice.id}" aria-label="Delete invoice ${escapeHtml(invoice.invoice_number || "draft")}">Delete</button>`}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="7">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
+    <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td><td>${invoice.status === "submitted" ? "—" : `<button class="mini-button delete" data-delete-invoice="${invoice.id}" aria-label="Delete invoice ${escapeHtml(invoice.invoice_number || "draft")}">Delete</button>`}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="8">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
+  updateBatchAiButton();
+}
+
+function updateBatchAiButton() {
+  const button = $("#batchAiButton");
+  if (!button) return;
+  button.disabled = state.selectedInvoices.size === 0;
+  button.textContent = state.selectedInvoices.size ? `AI complete selected (${state.selectedInvoices.size})` : "AI complete selected";
+}
+
+async function runBatchAi() {
+  const ids = [...state.selectedInvoices];
+  if (!ids.length || !confirm(`Send ${ids.length} selected invoice PDF${ids.length === 1 ? "" : "s"} to OpenAI? This uses one API request per invoice. AI fills supported fields and rows; unavailable information stays blank for your review.`)) return;
+  const button = $("#batchAiButton");
+  button.disabled = true;
+  const failures = [];
+  for (let index = 0; index < ids.length; index += 1) {
+    button.textContent = `AI completing ${index + 1} of ${ids.length}…`;
+    try { await api(`/api/invoices/${ids[index]}/extract-again?use_ai=true`, { method: "POST" }); }
+    catch (error) { failures.push(`${ids[index]}: ${error.message}`); }
+  }
+  state.selectedInvoices.clear();
+  await refreshBootstrap(); renderInvoiceTable();
+  toast(failures.length ? `${ids.length - failures.length} completed; ${failures.length} failed. Open failed invoices to see the error.` : `${ids.length} invoice${ids.length === 1 ? "" : "s"} completed by AI and ready for review`, failures.length ? "error" : "success");
 }
 
 async function openInvoice(invoiceId) {
@@ -269,7 +294,7 @@ function renderReview() {
   const document = invoice.document;
   $("#reviewContent").innerHTML = `
     <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="aiStatusButton" class="button quiet" title="Check the configured cloud invoice AI connection without processing this invoice">Check API AI</button><button id="rereadLocalButton" class="button quiet" title="Re-read unreviewed rows with the saved supplier layout; no API credits are used">Re-read locally</button><button id="extractAgainButton" class="button quiet" title="Send this PDF to API AI once and save its layout; confirmed rows are preserved">Learn layout with AI</button><button id="mapSupplierButton" class="button quiet" title="View, edit or restore this supplier's saved layouts">Supplier layout</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify obvious printing, freight and other extracted charges">Prepare invoice</button><button id="allocateChargesButton" class="button secondary" title="Preview and split freight, printing or handling charges across goods">Allocate charges</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="aiStatusButton" class="button quiet" title="Check the configured cloud invoice AI connection without processing this invoice">Check API AI</button><button id="rereadLocalButton" class="button quiet" title="Re-read unreviewed rows with the saved supplier layout; no API credits are used">Re-read locally</button><button id="extractAgainButton" class="button quiet" title="Ask AI to complete supported invoice fields and rows; missing information stays blank">AI complete form</button><button id="mapSupplierButton" class="button quiet" title="View, edit or restore this supplier's saved layouts">Supplier layout</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify obvious printing, freight and other extracted charges">Prepare invoice</button><button id="allocateChargesButton" class="button secondary" title="Preview and split freight, printing or handling charges across goods">Allocate charges</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
@@ -609,6 +634,8 @@ document.addEventListener("click", async event => {
     } catch (error) { toast(error.message, "error"); }
     return;
   }
+  if (event.target.closest("[data-select-invoice], #selectAllInvoices")) { event.stopPropagation(); return; }
+  if (event.target.closest("#batchAiButton")) { await runBatchAi(); return; }
   const opener = event.target.closest("[data-open-invoice]");
   if (opener) { event.preventDefault(); openInvoice(opener.dataset.openInvoice); return; }
   if (event.target.closest("#menuButton")) { document.body.classList.toggle("menu-open"); return; }
@@ -620,10 +647,10 @@ document.addEventListener("click", async event => {
   if (event.target.closest("#addLineButton") || event.target.closest("#addLineSmallButton")) { openLineDialog(); return; }
   const extractAgain = event.target.closest("#extractAgainButton");
   if (extractAgain) {
-    if (!confirm("Send this invoice PDF to OpenAI and use API credits to learn its layout? Uploading alone never sends invoices. Confirmed rows and previous layout versions will be preserved.")) return;
+    if (!confirm("Send this invoice PDF to OpenAI? AI will complete every supported field and row it can verify, leave unavailable information blank, and use one API request. Confirmed rows and previous layout versions are preserved.")) return;
     extractAgain.disabled = true; extractAgain.textContent = "Extracting…";
     try { state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/extract-again?use_ai=true`, { method: "POST" }); await refreshBootstrap(); renderReview(); toast("AI extraction suggestions updated"); }
-    catch (error) { extractAgain.disabled = false; extractAgain.textContent = "Learn layout with AI"; toast(error.message, "error"); }
+    catch (error) { extractAgain.disabled = false; extractAgain.textContent = "AI complete form"; toast(error.message, "error"); }
     return;
   }
   const rereadLocal = event.target.closest("#rereadLocalButton");
@@ -769,6 +796,19 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.matches("[data-select-invoice]")) {
+    const id = Number(event.target.dataset.selectInvoice);
+    if (event.target.checked) state.selectedInvoices.add(id); else state.selectedInvoices.delete(id);
+    updateBatchAiButton(); return;
+  }
+  if (event.target.matches("#selectAllInvoices")) {
+    $$('[data-select-invoice]:not(:disabled)').forEach(input => {
+      input.checked = event.target.checked;
+      const id = Number(input.dataset.selectInvoice);
+      if (input.checked) state.selectedInvoices.add(id); else state.selectedInvoices.delete(id);
+    });
+    updateBatchAiButton(); return;
+  }
   if (event.target.matches("#registrationMode")) {
     api("/api/admin/settings", { method: "PATCH", body: JSON.stringify({ registration_mode: event.target.value }) })
       .then(() => toast("Registration setting saved"))
@@ -933,7 +973,7 @@ mappingOverlay.addEventListener("pointercancel", () => { state.mapping.pointerId
 
 document.addEventListener("keydown", event => {
   const opener = event.target.closest?.("[data-open-invoice]");
-  if (opener && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openInvoice(opener.dataset.openInvoice); }
+  if (opener && !event.target.matches("input,button,select") && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openInvoice(opener.dataset.openInvoice); }
 });
 
 async function start() {

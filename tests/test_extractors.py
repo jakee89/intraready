@@ -1,9 +1,14 @@
 import unittest
 
-from app.extractors import _base_draft, _parse_midocean, _parse_stricker
+from app.extractors import _base_draft, _mapped_value, _parse_midocean, _parse_stricker
 
 
 class ExtractorTests(unittest.TestCase):
+    def test_mapped_labels_are_reduced_to_valid_codes(self):
+        self.assertEqual(_mapped_value("terms_delivery", "Incoterm: DAP Suema"), "DAP")
+        self.assertEqual(_mapped_value("currency", "Invoice currency EUR"), "EUR")
+        self.assertEqual(_mapped_value("currency", "R R R"), "")
+
     def test_midocean_layout_extracts_goods_and_linked_charges(self):
         lines = [[
             "INVOICE FAKTURA VAT", "Jake Borg Invoice 120502660", "Date 07.09.2026", "Incoterm DAP Msida",

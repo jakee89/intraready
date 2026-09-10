@@ -23,6 +23,10 @@ COUNTRY_NAMES = {
     "Spain": "ES", "Sweden": "SE", "China": "CN", "India": "IN", "Malta": "MT",
 }
 
+VALID_CURRENCIES = {"EUR", "USD", "GBP", "CHF", "PLN", "CZK", "SEK", "NOK", "DKK", "HUF", "RON", "BGN", "CNY", "JPY", "CAD", "AUD"}
+VALID_INCOTERMS = {"EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"}
+VALID_COUNTRIES = set(COUNTRY_NAMES.values()) | {"CY", "LU", "SI", "HR", "LT", "LV", "EE"}
+
 
 def layout_fingerprint(path: Path) -> str:
     """Stable enough to detect a supplier layout while ignoring invoice values."""
@@ -55,6 +59,19 @@ def _iso_date(value: str) -> str:
         except ValueError:
             continue
     return ""
+
+
+def _mapped_value(field: str, value: str) -> str:
+    upper = value.upper().strip()
+    if field == "currency":
+        if "€" in value:
+            return "EUR"
+        return next((code for code in VALID_CURRENCIES if re.search(rf"\b{code}\b", upper)), "")
+    if field == "terms_delivery":
+        return next((code for code in VALID_INCOTERMS if re.search(rf"\b{code}\b", upper)), "")
+    if field in {"supplier_vat_country", "consignment_country"}:
+        return next((code for code in VALID_COUNTRIES if re.search(rf"\b{code}\b", upper)), "")
+    return upper
 
 
 def _first(pattern: str, text: str, flags: int = 0) -> str:
@@ -99,14 +116,25 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
                    "currency", "consignment_country", "terms_delivery")
     for field in text_fields:
         value = str(extracted.get(field, "")).strip()
+        if field in {"supplier_vat_country", "currency", "consignment_country", "terms_delivery"}:
+            value = _mapped_value(field, value)
         if value:
-            draft[field] = value.upper() if field in {"supplier_vat_country", "currency", "consignment_country", "terms_delivery"} else value
+            draft[field] = value
     date_value = _iso_date(str(extracted.get("invoice_date", "")))
     if date_value:
         draft["invoice_date"] = date_value
     total = _money(str(extracted.get("total_value", "")))
     if total:
         draft["total_value"] = total
+    mode = str(extracted.get("mode_transport", "")).strip()
+    if mode in {"1", "2", "3", "4", "5", "7", "8", "9"}:
+        draft["mode_transport"] = mode
+    flow = str(extracted.get("flow", "")).strip().upper()
+    if flow in {"A", "D"}:
+        draft["flow"] = flow
+    transaction = str(extracted.get("nature_transaction", "")).strip()
+    if re.fullmatch(r"\d{2}", transaction):
+        draft["nature_transaction"] = transaction
     lines = []
     for item in extracted.get("lines", []):
         if not isinstance(item, dict) or not str(item.get("description", "")).strip():
@@ -221,9 +249,18 @@ def _apply_supplier_defaults(draft: dict, profile: dict) -> None:
     if country:
         draft["supplier_vat_country"] = country
         draft["supplier_vat_number"] = vat[2:]
-    for field in ("flow", "currency", "consignment_country", "mode_transport", "terms_delivery", "nature_transaction"):
-        if profile.get(field):
-            draft[field] = profile[field]
+    validators = {
+        "flow": lambda value: value if value in {"A", "D"} else "",
+        "currency": lambda value: _mapped_value("currency", value),
+        "consignment_country": lambda value: _mapped_value("consignment_country", value),
+        "mode_transport": lambda value: value if value in {"1", "2", "3", "4", "5", "7", "8", "9"} else "",
+        "terms_delivery": lambda value: _mapped_value("terms_delivery", value),
+        "nature_transaction": lambda value: value if re.fullmatch(r"\d{2}", value) else "",
+    }
+    for field, validator in validators.items():
+        value = validator(str(profile.get(field, "")).strip().upper())
+        if value:
+            draft[field] = value
     draft["notes"] += " Saved supplier defaults were applied."
 
 
@@ -282,7 +319,13 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
                 elif field == "total_value":
                     value = _money(value)
                 elif field in {"supplier_vat_country", "currency", "consignment_country", "terms_delivery"}:
-                    value = value.upper()
+                    value = _mapped_value(field, value)
+                elif field == "mode_transport":
+                    value = next((code for code in ("1", "2", "3", "4", "5", "7", "8", "9") if re.search(rf"\b{code}\b", value)), "")
+                elif field == "flow":
+                    value = value.strip().upper() if value.strip().upper() in {"A", "D"} else ""
+                elif field == "nature_transaction":
+                    value = value.strip() if re.fullmatch(r"\d{2}", value.strip()) else ""
                 if field in draft and value:
                     draft[field] = value
         # “Item Ref.” is the supplier SKU. A distinct “Product Code” column is an order/configuration code.
@@ -562,8 +605,6 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
             draft = _apply_ai_draft(draft, ai_result)
             draft["adapter"] = "api-ai"
             draft["notes"] += " The PDF pages were analysed to preserve the table layout."
-            if matched_profile:
-                _apply_supplier_defaults(draft, matched_profile)
         elif ai_message:
             draft["notes"] += " " + ai_message
     elif matched_profile and matched_profile.get("layout_mapping"):
@@ -586,7 +627,7 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
     else:
         draft = _parse_common_tables(draft, tables, combined)
         if not draft["lines"]:
-            draft["notes"] += " This layout is not known. Click Learn layout with AI to send this PDF for one API extraction and save a reusable supplier layout."
+            draft["notes"] += " This layout is not known. Click AI complete form to send this PDF for one API extraction and save a reusable supplier layout."
     if used_ocr:
         draft["notes"] += " One or more pages were read with local OCR."
         if draft["adapter"] == "general":

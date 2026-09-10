@@ -84,14 +84,14 @@
           <div id="uploadResults" class="upload-results"></div>
           <article class="info-card">
             <span class="info-icon">i</span>
-            <div><strong>Uploading never spends AI credits</strong><p>Invoices stay local until you explicitly click “Learn layout with AI” and approve sending that PDF to OpenAI. Saved layouts are processed locally without API credits. Every extracted row stays unreviewed until you confirm it.</p></div>
+            <div><strong>Uploading never spends AI credits</strong><p>Invoices stay local until you explicitly click “AI complete form” and approve sending that PDF to OpenAI. Saved layouts are processed locally without API credits. Every extracted row stays unreviewed until you confirm it.</p></div>
           </article>
         </section>
 
         <section class="page" data-page="invoices">
           <div class="page-intro compact">
             <div><p class="eyebrow">REVIEW QUEUE</p><h2>Invoices</h2><p>Keep invoice references here for checking. They are never included in the official export.</p></div>
-            <div class="toolbar"><select id="invoiceFilter" aria-label="Filter invoices"><option value="all">All statuses</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="submitted">Submitted</option></select><button class="button primary" data-nav="upload">Add invoices</button></div>
+            <div class="toolbar"><select id="invoiceFilter" aria-label="Filter invoices"><option value="all">All statuses</option><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="submitted">Submitted</option></select><button id="batchAiButton" class="button secondary" disabled title="Each selected PDF uses one API request">AI complete selected</button><button class="button primary" data-nav="upload">Add invoices</button></div>
           </div>
           <div class="panel table-panel"><div id="invoiceTable"></div></div>
         </section>
@@ -176,7 +176,7 @@
             <article><span>02</span><h3>Confirm the facts</h3><p>Enter the actual arrival date and country of consignment. Review each goods row and resolve charges before approval.</p><button class="text-button" data-nav="invoices">Open review queue →</button></article>
             <article><span>03</span><h3>Remember products</h3><p>After checking a recurring SKU, save its commodity code and unit net weight. Future invoices can reuse those facts.</p><button class="text-button" data-nav="catalogue">View product memory →</button></article>
             <article><span>04</span><h3>Export, then upload</h3><p>Preview rounded declaration values. Download the XSD-validated XML, upload it yourself, and record the receipt reference.</p><button class="text-button" data-nav="declarations">Build a declaration →</button></article>
-            <article><span>AI</span><h3>Connect invoice AI</h3><p>Create a secret key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI API keys ↗</a>, then open Organisation → AI and usage to save and test it. Uploading never calls AI. Click “Learn layout with AI” only for an unknown or changed layout; the confirmation explains that the PDF will be sent to OpenAI.</p><p>Matching saved layouts are read locally without API credits. The dashboard reports tokens and optional cost estimates. Never paste the secret key into an invoice or notes field.</p></article>
+            <article><span>AI</span><h3>Connect invoice AI</h3><p>Create a secret key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI API keys ↗</a>, then open Organisation → AI and usage to save and test it. Uploading never calls AI. Use “AI complete form” for one invoice, or select several invoices in the review queue and choose “AI complete selected”.</p><p>Each selected PDF uses one API request. Matching saved layouts are read locally without API credits. Never paste the secret key into an invoice or notes field.</p></article>
             <article><span>↶</span><h3>Template history</h3><p>Every AI or manual supplier map creates a version. Open “Map supplier” to inspect versions and restore an earlier one if a changed layout produces worse results.</p></article>
           </div>
           <article class="panel reference-panel">
