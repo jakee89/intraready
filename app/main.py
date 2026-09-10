@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.15.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.15.1", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -1214,13 +1214,23 @@ async def review_lines(invoice_id: int, request: Request):
     changes = (await request.json()).get("reviewed", [])
     with transaction() as connection:
         valid_ids = {item[0] for item in connection.execute("SELECT id FROM invoice_lines WHERE invoice_id=?", (invoice_id,))}
+        saved = 0
+        stale = 0
         for change in changes:
-            line_id = int(change.get("id", 0))
+            try:
+                line_id = int(change.get("id", 0))
+            except (TypeError, ValueError):
+                stale += 1
+                continue
             if line_id not in valid_ids:
-                raise HTTPException(422, "A reviewed row does not belong to this invoice.")
+                # Extraction can replace rows while review ticks are still pending in the browser.
+                # Ignore those expired IDs so valid selections are not lost.
+                stale += 1
+                continue
             connection.execute("UPDATE invoice_lines SET reviewed=?,updated_at=? WHERE id=?", (1 if change.get("reviewed") else 0, utc_now(), line_id))
-        if changes:
-            _invalidate(connection, invoice_id, "lines_reviewed", {"count": len(changes)})
+            saved += 1
+        if saved:
+            _invalidate(connection, invoice_id, "lines_reviewed", {"count": saved, "stale_ignored": stale})
     return _payload(invoice_id)
 
 

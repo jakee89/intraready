@@ -289,6 +289,8 @@ function invoiceInput(field, label, tip, invoice) {
 function renderReview() {
   const invoice = state.currentInvoice;
   if (!invoice) return;
+  const currentLineIds = new Set(invoice.lines.map(line => line.id));
+  for (const id of state.pendingReviews.keys()) if (!currentLineIds.has(id)) state.pendingReviews.delete(id);
   const issues = invoice.readiness.issues;
   const issueLines = new Set(issues.filter(item => item.line_id).map(item => item.line_id));
   const document = invoice.document;
@@ -728,7 +730,9 @@ document.addEventListener("click", async event => {
   if (event.target.closest("[data-close-allocation]")) { $("#chargeAllocationDialog").close(); return; }
   if (event.target.closest("#previewAllocationButton")) { await previewAllocation(); return; }
   if (event.target.closest("#saveReviewedButton")) {
-    const reviewed = [...state.pendingReviews].map(([id, value]) => ({ id, reviewed: value }));
+    const currentLineIds = new Set((state.currentInvoice?.lines || []).map(line => line.id));
+    const reviewed = [...state.pendingReviews].filter(([id]) => currentLineIds.has(id)).map(([id, value]) => ({ id, reviewed: value }));
+    for (const id of state.pendingReviews.keys()) if (!currentLineIds.has(id)) state.pendingReviews.delete(id);
     if (!reviewed.length) return;
     try {
       state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/review-lines`, { method: "PATCH", body: JSON.stringify({ reviewed }) });
