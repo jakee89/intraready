@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Sign in · {{APP_TITLE}}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/auth.css">
+  <script src="/static/auth.js" defer></script>
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-brand">
+      <span class="brand-mark">IR</span>
+      <p class="eyebrow">SECURE DECLARATION WORKSPACE</p>
+      <h1>Invoices in. Reviewed declarations out.</h1>
+      <p>Supplier layouts and declaration records remain separated by organisation. Paid AI runs only when a user approves them.</p>
+    </section>
+    <section class="auth-card">
+      <div id="loading">Checking your workspace…</div>
+      <form id="loginForm" class="hidden">
+        <p class="eyebrow">WELCOME BACK</p><h2>Sign in</h2>
+        <label>Email address<input name="email" type="email" autocomplete="username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+        <p id="loginError" class="error" role="alert"></p>
+        <button type="submit">Sign in</button>
+        <small>Too many unsuccessful attempts temporarily lock further sign-in attempts.</small>
+        <button id="showRegister" class="secondary hidden" type="button">Request an account</button>
+      </form>
+      <form id="registerForm" class="hidden">
+        <p class="eyebrow">ACCOUNT REQUEST</p><h2>Request a workspace</h2>
+        <p>The platform owner will review your request before you can sign in.</p>
+        <label>Your name<input name="name" autocomplete="name" required></label>
+        <label>Work email<input name="email" type="email" autocomplete="username" required></label>
+        <label>Organisation<input name="organisation" autocomplete="organization" required></label>
+        <label>Password<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+        <p id="registerError" class="error" role="alert"></p>
+        <button type="submit">Send request</button><button id="backToLogin" class="secondary" type="button">Back to sign in</button>
+      </form>
+      <div id="registerComplete" class="hidden"><p class="eyebrow">REQUEST RECEIVED</p><h2>Awaiting approval</h2><p>Your request is waiting for the platform owner. You can sign in after it is approved.</p><button id="completeToLogin">Return to sign in</button></div>
+      <form id="changePasswordForm" class="hidden">
+        <p class="eyebrow">SECURITY STEP</p><h2>Replace your temporary password</h2>
+        <label>Temporary password<input name="current_password" type="password" autocomplete="current-password" required></label>
+        <label>New password<input name="new_password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+        <label>Repeat new password<input name="password_confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+        <p id="changePasswordError" class="error" role="alert"></p><button type="submit">Save password and continue</button>
+      </form>
+      <form id="setupForm" class="hidden">
+        <p class="eyebrow">FIRST-TIME SETUP</p><h2>Create the platform owner</h2>
+        <p>This is the only account that can change registration, plans and platform administration.</p>
+        <label>Your name<input name="name" autocomplete="name" required></label>
+        <label>Email address<input name="email" type="email" autocomplete="username" required></label>
+        <label>Organisation name<input name="organisation" autocomplete="organization" required></label>
+        <label>One-time setup code<input name="setup_code" type="password" autocomplete="off" required><small>For an upgrade, use your existing IntraReady app password. For a new install, use the `INTRASTAT_BOOTSTRAP_TOKEN` set in Portainer.</small></label>
+        <label>Password<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required><small>Use at least 12 characters. A long passphrase is easiest.</small></label>
+        <label>Repeat password<input name="password_confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+        <p id="setupError" class="error" role="alert"></p>
+        <button type="submit">Create secure workspace</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

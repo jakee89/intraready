@@ -34,7 +34,10 @@ The app intentionally stops before government submission. It prepares and valida
 - XML generation only after an official XSD passes inspection; every XML is validated against that XSD
 - Immutable stored export copies and audit events
 - Optional HTTP Basic Authentication for a private server
-- SQLite schema already scoped by organisation ID for a future tenant/auth migration
+- Secure owner setup, Argon2id passwords, server-side sessions and CSRF protection
+- Organisation-scoped accounts with owner, administrator, preparer, reviewer and viewer roles
+- Platform administration dashboard with account approval, usage visibility and closed/approval-only registration
+- Inactive billing plans and entitlement storage; this version cannot create payments or charges
 
 CN-list importing, receipt-file upload and automatic NSO portal submission are not included. Manual review remains required. The XML schema is not bundled because the NSO download returned a Cloudflare block page during development; use the one-time schema upload in Organisation settings.
 
@@ -67,7 +70,9 @@ Create a `.env` file beside `compose.yaml` using `.env.example` and choose a lon
 docker compose up -d --build
 ```
 
-Open `http://SERVER-IP:8088`. The Basic Authentication username is `intrastat`; the password is `INTRASTAT_APP_PASSWORD`.
+Open `http://SERVER-IP:8088`. On the first visit, create the platform-owner account. This account is attached to organisation 1, so invoices already stored in the existing data volume remain available. The one-time setup code is `INTRASTAT_BOOTSTRAP_TOKEN`; upgraded installations may use the existing `INTRASTAT_APP_PASSWORD` value instead. After the owner exists, neither value is accepted as a login password.
+
+Keep registration **Closed** until the app is behind HTTPS and you are ready to approve account requests. When HTTPS is configured, set `INTRASTAT_AUTH_COOKIE_SECURE=true`. Leaving it false is required only for a private plain-HTTP LAN installation.
 
 Create an API key at https://platform.openai.com/api-keys and set `INTRASTAT_OPENAI_API_KEY` in `.env` or in the Portainer stack environment. The default `gpt-5.6-terra` model can be changed with `INTRASTAT_OPENAI_MODEL`. Use **Check API AI** in invoice review to verify access. The key is read only from the container environment and is never stored in SQLite or shown in the browser.
 
@@ -75,7 +80,7 @@ For Portainer, either deploy `compose.yaml` from a Git repository (so its build 
 
 For Portainer, deploy `compose.portainer.yaml` from the Git repository so the Docker build context is available. The volume has the stable name `intraready_intraready_data`; set `INTRASTAT_DATA_VOLUME` only if an older installation uses another existing volume name.
 
-Before exposing the service outside the LAN, put it behind an authenticated HTTPS reverse proxy or VPN. Basic Authentication is a practical private-server gate; a public SaaS needs proper accounts, password recovery, per-tenant authorization, rate limits, object storage, PostgreSQL, background jobs, monitoring and a privacy/retention policy.
+Before exposing the service outside the LAN, put it behind an HTTPS reverse proxy or VPN and enable secure cookies. Public SaaS launch still requires verified email delivery, MFA/passkeys, password recovery, PostgreSQL, object storage, background jobs, monitoring, tested tenant isolation and the documented privacy/security gate.
 
 ## First-use checklist
 

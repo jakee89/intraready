@@ -14,6 +14,7 @@ const titles = {
   invoices: ["REVIEW", "Invoices"], review: ["INVOICE", "Review invoice"],
   catalogue: ["LIBRARY", "Product memory"], declarations: ["EXPORT", "Declarations"],
   settings: ["CONFIGURATION", "Organisation"], guide: ["HELP", "How it works"],
+  admin: ["PLATFORM", "Administration"],
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -63,8 +64,12 @@ function toast(message, kind = "success") {
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  if (options.method && !["GET", "HEAD"].includes(options.method)) headers.set("X-IntraReady-Request", "1");
+  if (options.method && !["GET", "HEAD"].includes(options.method)) {
+    headers.set("X-IntraReady-Request", "1");
+    if (state.bootstrap?.auth?.csrf_token) headers.set("X-CSRF-Token", state.bootstrap.auth.csrf_token);
+  }
   const response = await fetch(path, { ...options, headers });
+  if (response.status === 401) { location.replace("/login"); throw new Error("Sign in required"); }
   const contentType = response.headers.get("content-type") || "";
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
@@ -96,6 +101,7 @@ function navigate(page, options = {}) {
   if (page === "catalogue") loadCatalogue();
   if (page === "settings") renderSettings();
   if (page === "declarations") { renderDeclarationLanding(); loadExports(); }
+  if (page === "admin") loadAdmin();
 }
 
 function profileMissing(profile) {
@@ -105,6 +111,11 @@ function profileMissing(profile) {
 function renderShared() {
   const data = state.bootstrap;
   if (!data) return;
+  const auth = data.auth || {};
+  $("#accountName").textContent = auth.name || auth.email || "Account";
+  $("#accountOrganisation").textContent = auth.organisation_name || "Organisation";
+  $("#accountInitial").textContent = (auth.name || auth.email || "?").trim().slice(0, 1).toUpperCase();
+  $("#adminNav").classList.toggle("hidden", !["owner", "support", "auditor"].includes(auth.platform_role));
   const badge = $("#reviewBadge");
   badge.textContent = data.stats.needs_review;
   badge.classList.toggle("hidden", data.stats.needs_review === 0);
@@ -122,6 +133,32 @@ function renderShared() {
   renderRecentInvoices();
   renderInvoiceTable();
   renderSchemaIndicators();
+}
+
+async function loadAdmin() {
+  const target = $("#adminContent");
+  if (!target) return;
+  target.innerHTML = `<div class="panel loading"></div>`;
+  try {
+    const data = await api("/api/admin/overview");
+    const active = data.accounts.filter(item => item.status === "active").length;
+    target.innerHTML = `
+      <div class="metric-grid admin-metrics">
+        <article class="metric"><span class="metric-label">Accounts</span><strong>${data.accounts.length}</strong><small>${active} active</small></article>
+        <article class="metric"><span class="metric-label">Organisations</span><strong>${data.organisations.length}</strong><small>Strictly separated workspaces</small></article>
+        <article class="metric"><span class="metric-label">Registration</span><strong class="metric-word">${escapeHtml((data.settings.registration_mode || "closed").replaceAll("_", " "))}</strong><small>Change below</small></article>
+        <article class="metric"><span class="metric-label">Billing</span><strong class="metric-word">Inactive</strong><small>No charges can be created</small></article>
+      </div>
+      <article class="panel admin-panel">
+        <div class="panel-head"><div><p class="eyebrow">ACCESS</p><h2>Accounts</h2></div>${state.bootstrap.auth.platform_role === "owner" ? `<button class="button primary" data-add-account>Add account</button>` : ""}</div>
+        <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Platform role</th><th>Last sign-in</th><th>Action</th></tr></thead><tbody>
+          ${data.accounts.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.requested_organisation ? `<span class="subline">${escapeHtml(item.requested_organisation)}</span>` : ""}</td><td>${escapeHtml(item.email)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.platform_role || "Member")}</td><td>${escapeHtml(item.last_login_at || "Never")}</td><td>${item.status === "pending" && state.bootstrap.auth.platform_role === "owner" ? `<button class="mini-button" data-activate-account="${item.id}">Approve</button>` : item.platform_role !== "owner" && state.bootstrap.auth.platform_role === "owner" ? `<button class="mini-button" data-account-status="${item.id}" data-next-status="${item.status === "suspended" ? "active" : "suspended"}">${item.status === "suspended" ? "Restore" : "Suspend"}</button>` : "—"}</td></tr>`).join("")}
+        </tbody></table></div>
+      </article>
+      ${state.bootstrap.auth.platform_role === "owner" ? `<article class="panel admin-panel"><div class="panel-head"><div><p class="eyebrow">REGISTRATION</p><h2>Who can request an account?</h2></div></div><div class="admin-setting"><div><strong>Registration mode</strong><p>Closed allows only accounts you create. Approval required adds a public request form, but nobody can sign in until you approve them.</p></div><select id="registrationMode"><option value="closed">Closed</option><option value="approval_required">Requests require approval</option></select></div></article>` : ""}
+      <article class="panel admin-panel"><div class="panel-head"><div><p class="eyebrow">ORGANISATIONS</p><h2>Usage overview</h2></div></div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Organisation</th><th>Seats</th><th>Invoices</th><th>Created</th></tr></thead><tbody>${data.organisations.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${item.seats}</td><td>${item.invoices}</td><td>${escapeHtml(item.created_at)}</td></tr>`).join("")}</tbody></table></div></article>`;
+    if ($("#registrationMode")) $("#registrationMode").value = data.settings.registration_mode || "closed";
+  } catch (error) { target.innerHTML = `<div class="empty-state"><h2>Administration unavailable</h2><p>${escapeHtml(error.message)}</p></div>`; }
 }
 
 function renderRecentInvoices() {
@@ -283,6 +320,7 @@ function renderSettings() {
     const input = $(`#profileForm [name="${field}"]`);
     if (input) input.value = value ?? "";
   }
+  if ($("#securityAccountEmail")) $("#securityAccountEmail").textContent = state.bootstrap.auth?.email || "";
   renderSchemaIndicators();
 }
 
@@ -432,6 +470,27 @@ async function processFiles(files) {
 }
 
 document.addEventListener("click", async event => {
+  if (event.target.closest("#logoutButton")) {
+    try { await api("/api/auth/logout", { method: "POST" }); } finally { location.replace("/login"); }
+    return;
+  }
+  if (event.target.closest("#changePasswordButton")) { $("#passwordForm").reset(); $("#passwordDialog").showModal(); return; }
+  if (event.target.closest("#refreshAdminButton")) { loadAdmin(); return; }
+  if (event.target.closest("[data-add-account]")) { $("#accountForm").reset(); $("#accountDialog").showModal(); return; }
+  const activation = event.target.closest("[data-activate-account]");
+  if (activation) {
+    try { await api(`/api/admin/accounts/${activation.dataset.activateAccount}/activate`, { method: "POST" }); await loadAdmin(); toast("Account approved"); }
+    catch (error) { toast(error.message, "error"); }
+    return;
+  }
+  const accountStatus = event.target.closest("[data-account-status]");
+  if (accountStatus) {
+    const action = accountStatus.dataset.nextStatus === "active" ? "restore" : "suspend";
+    if (!confirm(`${action[0].toUpperCase() + action.slice(1)} this account?`)) return;
+    try { await api(`/api/admin/accounts/${accountStatus.dataset.accountStatus}/status`, { method: "PATCH", body: JSON.stringify({ status: accountStatus.dataset.nextStatus }) }); await loadAdmin(); toast(action === "restore" ? "Account restored" : "Account suspended"); }
+    catch (error) { toast(error.message, "error"); }
+    return;
+  }
   const nav = event.target.closest("[data-nav]");
   if (nav) { event.preventDefault(); navigate(nav.dataset.nav); return; }
   const deleteInvoice = event.target.closest("[data-delete-invoice]");
@@ -598,6 +657,12 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.matches("#registrationMode")) {
+    api("/api/admin/settings", { method: "PATCH", body: JSON.stringify({ registration_mode: event.target.value }) })
+      .then(() => toast("Registration setting saved"))
+      .catch(error => { toast(error.message, "error"); loadAdmin(); });
+    return;
+  }
   if (event.target.matches("#mappingField")) { state.mapping.start = null; state.mapping.draft = null; $("#mappingStatus").textContent = "Drag a box around the value"; renderMappingBoxes(); return; }
   if (event.target.matches("[data-review-line]")) {
     const id = Number(event.target.dataset.reviewLine);
@@ -635,6 +700,24 @@ $("#lineForm").addEventListener("input", event => {
   const quantity = Number(event.currentTarget.elements.quantity.value);
   const unitMass = Number(event.currentTarget.elements.unit_net_mass.value);
   if (Number.isFinite(quantity) && Number.isFinite(unitMass)) event.currentTarget.elements.net_mass.value = String(quantity * unitMass);
+});
+
+$("#accountForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") { $("#accountDialog").close(); return; }
+  try {
+    await api("/api/admin/accounts", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
+    $("#accountDialog").close(); await loadAdmin(); toast("Account created");
+  } catch (error) { toast(error.message, "error"); }
+});
+
+$("#passwordForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") { $("#passwordDialog").close(); return; }
+  const body = Object.fromEntries(new FormData(event.currentTarget));
+  if (body.new_password !== body.password_confirm) { toast("The new passwords do not match", "error"); return; }
+  try { await api("/api/auth/change-password", { method: "POST", body: JSON.stringify(body) }); $("#passwordDialog").close(); toast("Password changed; other sessions were signed out"); }
+  catch (error) { toast(error.message, "error"); }
 });
 
 $("#catalogueForm").addEventListener("submit", async event => {

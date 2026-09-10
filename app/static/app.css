@@ -47,6 +47,18 @@ p { color: var(--muted); }
 .nav-icon { display: grid; width: 23px; height: 23px; place-items: center; font-size: 1rem; }
 .nav-badge { min-width: 21px; margin-left: auto; padding: 2px 6px; border-radius: 999px; color: var(--forest); background: #9de0c9; font-size: .7rem; text-align: center; }
 .sidebar-lower { margin-top: auto; }
+.account-card { display:grid; grid-template-columns:38px minmax(0,1fr) 32px; gap:10px; align-items:center; margin-top:14px; padding:12px 8px; border-top:1px solid rgba(255,255,255,.14); }
+.account-card>span { display:grid; place-items:center; width:38px; height:38px; border-radius:12px; color:var(--forest); background:#dff5ec; font-weight:850; }
+.account-card div { min-width:0; display:grid; }
+.account-card strong,.account-card small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.account-card small { color:#a9c8c0; }
+.account-card button { border:0; color:#d6e8e3; background:transparent; font-size:1.15rem; cursor:pointer; }
+.admin-panel { margin-top:22px; }
+.admin-metrics { margin-bottom:22px; }
+.metric-word { font-size:1.25rem !important; text-transform:capitalize; }
+.admin-setting { display:flex; align-items:center; justify-content:space-between; gap:28px; }
+.admin-setting p { margin:.35rem 0 0; color:var(--muted); }
+.admin-setting select { min-width:220px; }
 .local-note { display: flex; gap: 10px; align-items: flex-start; margin: 24px 8px 0; padding-top: 18px; border-top: 1px solid rgba(255,255,255,.11); color: #d8e7e2; font-size: .76rem; font-weight: 700; }
 .local-note small { display: block; margin-top: 2px; color: #8db1a8; font-weight: 500; }
 .status-dot { width: 8px; height: 8px; margin-top: 4px; flex: none; border-radius: 50%; background: #78d6b9; box-shadow: 0 0 0 4px rgba(120,214,185,.12); }

@@ -13,10 +13,12 @@ SCHEMA_DIR = DATA_DIR / "schemas"
 
 MAX_UPLOAD_BYTES = int(os.getenv("INTRASTAT_MAX_UPLOAD_MB", "20")) * 1024 * 1024
 APP_PASSWORD = os.getenv("INTRASTAT_APP_PASSWORD", "")
+BOOTSTRAP_TOKEN = os.getenv("INTRASTAT_BOOTSTRAP_TOKEN", "") or APP_PASSWORD
 APP_TITLE = os.getenv("INTRASTAT_APP_TITLE", "IntraReady")
 OPENAI_API_KEY = os.getenv("INTRASTAT_OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("INTRASTAT_OPENAI_MODEL", "gpt-5.6-terra")
 OPENAI_BASE_URL = os.getenv("INTRASTAT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+AUTH_COOKIE_SECURE = os.getenv("INTRASTAT_AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
 
 
 def ensure_directories() -> None:

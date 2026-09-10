@@ -4,3 +4,4 @@ python-multipart==0.0.20
 pdfplumber==0.11.7
 lxml==6.0.1
 pytesseract==0.3.13
+argon2-cffi==25.1.0

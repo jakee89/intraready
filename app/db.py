@@ -17,6 +17,108 @@ CREATE TABLE IF NOT EXISTS organisations (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    email_normalized TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    platform_role TEXT NOT NULL DEFAULT '',
+    email_verified_at TEXT NOT NULL DEFAULT '',
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    requested_organisation TEXT NOT NULL DEFAULT '',
+    last_login_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS organisation_memberships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    UNIQUE(organisation_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    active_organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    csrf_token TEXT NOT NULL,
+    user_agent TEXT NOT NULL DEFAULT '',
+    ip_address TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_normalized TEXT NOT NULL,
+    succeeded INTEGER NOT NULL DEFAULT 0,
+    ip_address TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS security_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    organisation_id INTEGER REFERENCES organisations(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS plans (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    entitlements TEXT NOT NULL DEFAULT '{}',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS organisation_subscriptions (
+    organisation_id INTEGER PRIMARY KEY REFERENCES organisations(id) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL REFERENCES plans(id),
+    status TEXT NOT NULL DEFAULT 'inactive',
+    provider_customer_id TEXT NOT NULL DEFAULT '',
+    provider_subscription_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS metered_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    metric TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    source_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(organisation_id, metric, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS billing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_event_id TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    processed_at TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS profiles (
     organisation_id INTEGER PRIMARY KEY REFERENCES organisations(id),
     trader_vat TEXT NOT NULL DEFAULT '',
@@ -198,6 +300,9 @@ CREATE INDEX IF NOT EXISTS idx_lines_invoice ON invoice_lines(invoice_id, positi
 CREATE INDEX IF NOT EXISTS idx_products_lookup ON product_facts(organisation_id, supplier_vat, sku);
 CREATE INDEX IF NOT EXISTS idx_supplier_profiles ON supplier_profiles(organisation_id, supplier_vat);
 CREATE INDEX IF NOT EXISTS idx_supplier_templates ON supplier_template_versions(organisation_id, supplier_vat, version);
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON user_sessions(token_hash, expires_at);
+CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(email_normalized, created_at);
+CREATE INDEX IF NOT EXISTS idx_security_events ON security_events(created_at, action);
 """
 
 
@@ -249,6 +354,12 @@ def init_db() -> None:
             connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_fingerprint TEXT NOT NULL DEFAULT ''")
         if "layout_version" not in supplier_columns:
             connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_version INTEGER NOT NULL DEFAULT 0")
+        user_columns = {item[1] for item in connection.execute("PRAGMA table_info(users)")}
+        if "requested_organisation" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN requested_organisation TEXT NOT NULL DEFAULT ''")
+        login_columns = {item[1] for item in connection.execute("PRAGMA table_info(login_attempts)")}
+        if "ip_address" not in login_columns:
+            connection.execute("ALTER TABLE login_attempts ADD COLUMN ip_address TEXT NOT NULL DEFAULT ''")
         now = utc_now()
         connection.execute(
             "INSERT OR IGNORE INTO organisations(id, name, created_at) VALUES(1, ?, ?)",
@@ -256,6 +367,16 @@ def init_db() -> None:
         )
         connection.execute(
             "INSERT OR IGNORE INTO profiles(organisation_id, updated_at) VALUES(1, ?)",
+            (now,),
+        )
+        connection.execute("INSERT OR IGNORE INTO platform_settings(key,value,updated_at) VALUES('registration_mode','closed',?)", (now,))
+        connection.execute("INSERT OR IGNORE INTO platform_settings(key,value,updated_at) VALUES('billing_enabled','false',?)", (now,))
+        connection.execute(
+            "INSERT OR IGNORE INTO plans(id,name,entitlements,active,created_at) VALUES('internal','Internal',?,1,?)",
+            ('{"organisations":1,"seats":10,"invoices_per_month":10000,"ai_budget":0}', now),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO organisation_subscriptions(organisation_id,plan_id,status,updated_at) VALUES(1,'internal','inactive',?)",
             (now,),
         )
 

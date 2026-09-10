@@ -27,8 +27,9 @@
         <nav>
           <button class="nav-item" data-nav="guide"><span class="nav-icon">?</span>How it works</button>
           <button class="nav-item" data-nav="settings"><span class="nav-icon">⚙</span>Organisation</button>
+          <button id="adminNav" class="nav-item hidden" data-nav="admin"><span class="nav-icon">⌘</span>Platform admin</button>
         </nav>
-        <div class="local-note"><span class="status-dot"></span><span>Review workspace<small>Unknown layouts may use API AI</small></span></div>
+        <div class="account-card"><span id="accountInitial">?</span><div><strong id="accountName">Account</strong><small id="accountOrganisation">Organisation</small></div><button id="logoutButton" title="Sign out" aria-label="Sign out">↪</button></div>
       </div>
     </aside>
 
@@ -143,6 +144,10 @@
             <form id="schemaForm" class="schema-upload"><input id="schemaInput" type="file" name="file" accept=".xsd,application/xml,text/xml" required><button class="button secondary" type="submit">Upload official XSD</button></form>
             <p class="fine-print">Download “XML Schema File” from the NSO downloads page. The app rejects HTML block pages and does not export XML until the required fields map and the file validates against the schema.</p>
           </article>
+          <article class="panel schema-panel">
+            <div class="section-heading"><span>04</span><div><h3>Account security</h3><p>Signed in as <strong id="securityAccountEmail"></strong>. Changing your password signs out every other session.</p></div></div>
+            <button id="changePasswordButton" class="button secondary">Change password</button>
+          </article>
         </section>
 
         <section class="page" data-page="guide">
@@ -166,6 +171,11 @@
               <div><strong>Statistical value</strong><p>Goods plus relevant transport/insurance costs under the applicable rule.</p></div>
             </div>
           </article>
+        </section>
+
+        <section class="page" data-page="admin">
+          <div class="page-intro compact"><div><p class="eyebrow">PLATFORM OWNER</p><h2>Accounts and service controls</h2><p>Manage access and monitor the platform. Billing is built as an inactive foundation and cannot charge anyone.</p></div><button id="refreshAdminButton" class="button secondary">Refresh</button></div>
+          <div id="adminContent"><div class="panel loading"></div></div>
         </section>
       </main>
     </div>
@@ -229,6 +239,28 @@
     <div id="mappingRegionList" class="mapping-region-list"></div>
     <div id="mappingHistory" class="mapping-history"></div>
     <div class="form-actions"><button class="button quiet" data-close-mapping>Cancel</button><button id="previewMappingButton" class="button secondary">Preview extracted rows</button><button id="saveMappingButton" class="button primary">Save supplier map</button></div>
+  </dialog>
+
+  <dialog id="accountDialog" class="modal">
+    <form id="accountForm" method="dialog">
+      <div class="modal-head"><div><p class="eyebrow">NEW ACCOUNT</p><h2>Add a team member</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <p>This creates an account in your organisation. Give the temporary password privately; the user will be required to change it.</p>
+      <div class="form-grid">
+        <label>Name<input name="name" autocomplete="off" required></label>
+        <label>Email<input name="email" type="email" autocomplete="off" required></label>
+        <label>Role<select name="role"><option value="preparer">Preparer</option><option value="reviewer">Reviewer</option><option value="viewer">Viewer</option><option value="administrator">Administrator</option></select></label>
+        <label>Temporary password<input name="temporary_password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
+      </div>
+      <div class="form-actions"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" type="submit" value="default">Create account</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="passwordDialog" class="modal">
+    <form id="passwordForm" method="dialog">
+      <div class="modal-head"><div><p class="eyebrow">ACCOUNT SECURITY</p><h2>Change password</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div class="form-grid"><label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label><label>New password<input name="new_password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>Repeat new password<input name="password_confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label></div>
+      <div class="form-actions"><button class="button quiet" value="cancel">Cancel</button><button class="button primary" type="submit" value="default">Change password</button></div>
+    </form>
   </dialog>
 
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>

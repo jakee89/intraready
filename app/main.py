@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
 import json
 import re
+import secrets
 import uuid
 import io
 import time
@@ -14,22 +13,32 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 import pdfplumber
 
-from .config import APP_PASSWORD, APP_TITLE, BASE_DIR, EXPORT_DIR, MAX_UPLOAD_BYTES, SCHEMA_DIR, UPLOAD_DIR, ensure_directories
+from .config import APP_TITLE, AUTH_COOKIE_SECURE, BASE_DIR, BOOTSTRAP_TOKEN, EXPORT_DIR, MAX_UPLOAD_BYTES, SCHEMA_DIR, UPLOAD_DIR, ensure_directories
+from .auth import (
+    SESSION_COOKIE, audit, authenticate, create_session, current_context, first_membership,
+    current_organisation_id, hash_password, is_platform_admin, load_session,
+    login_blocked, reset_context, revoke_session, set_context, users_exist, verify_password,
+)
 from .db import connect, init_db, row, rows, transaction, utc_now
 from .exporter import csv_bytes, declaration_rows, inspect_schema, sha256, xml_bytes
 from .extractors import extract_invoice, layout_fingerprint, preview_saved_mapping
 from .cn_reference import cn_requirement, search_cn
 from .cloud_ai import ai_status, rank_cn_candidates
 from .rules import invoice_issues, readiness
+from .billing import subscription_status
 
 
-ORG_ID = 1
 TEMPLATE_PATH = BASE_DIR / "app" / "templates" / "index.html"
+LOGIN_TEMPLATE_PATH = BASE_DIR / "app" / "templates" / "login.html"
 SCHEMA_PATH = SCHEMA_DIR / "malta-intrastat.xsd"
+
+
+def _org_id() -> int:
+    return current_organisation_id()
 
 INVOICE_FIELDS = {
     "supplier_name", "supplier_vat_country", "supplier_vat_number", "invoice_number",
@@ -60,7 +69,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.8.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.9.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -76,15 +85,41 @@ def test_cloud_ai():
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    if APP_PASSWORD and request.url.path != "/api/health":
-        supplied = request.headers.get("authorization", "")
-        expected = "Basic " + base64.b64encode(f"intrastat:{APP_PASSWORD}".encode()).decode()
-        if not hmac.compare_digest(supplied, expected):
-            return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="IntraReady"'})
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path.startswith("/api/"):
-        if request.headers.get("x-intraready-request") != "1":
-            return JSONResponse({"detail": "Missing same-origin request header"}, status_code=403)
-    response = await call_next(request)
+    path = request.url.path
+    public = path.startswith("/static/") or path in {
+        "/login", "/api/health", "/api/auth/status", "/api/auth/login",
+        "/api/auth/setup-owner", "/api/auth/register",
+    }
+    raw_session = request.cookies.get(SESSION_COOKIE, "")
+    auth_context = load_session(raw_session)
+    context_token = set_context(auth_context)
+    try:
+        if auth_context and auth_context.get("must_change_password") and path not in {"/login", "/api/auth/status", "/api/auth/change-password", "/api/auth/logout"} and not path.startswith("/static/"):
+            if path.startswith("/api/"):
+                response = JSONResponse({"detail": "Change the temporary password before continuing", "code": "PASSWORD_CHANGE_REQUIRED"}, status_code=403)
+            else:
+                response = RedirectResponse("/login", status_code=303)
+        elif not public and not auth_context:
+            if path.startswith("/api/"):
+                response = JSONResponse({"detail": "Sign in required", "code": "AUTH_REQUIRED"}, status_code=401)
+            else:
+                response = RedirectResponse("/login", status_code=303)
+        elif request.method not in {"GET", "HEAD", "OPTIONS"} and path.startswith("/api/") and auth_context:
+            role = auth_context.get("organisation_role", "viewer")
+            if role == "viewer" and not path.startswith("/api/auth/"):
+                response = JSONResponse({"detail": "Your role is read-only", "code": "PERMISSION_DENIED"}, status_code=403)
+            elif path in {"/api/profile", "/api/schema"} and role not in {"owner", "administrator"}:
+                response = JSONResponse({"detail": "Organisation administrator access required", "code": "PERMISSION_DENIED"}, status_code=403)
+            else:
+                supplied = request.headers.get("x-csrf-token", "")
+                if not supplied or not secrets.compare_digest(supplied, auth_context["csrf_token"]):
+                    response = JSONResponse({"detail": "Your session check failed. Refresh and try again.", "code": "CSRF_FAILED"}, status_code=403)
+                else:
+                    response = await call_next(request)
+        else:
+            response = await call_next(request)
+    finally:
+        reset_context(context_token)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -96,12 +131,289 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
+def _set_session_cookie(response: Response, raw_token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE, raw_token, max_age=14 * 24 * 60 * 60, httponly=True,
+        secure=AUTH_COOKIE_SECURE, samesite="lax", path="/",
+    )
+
+
+def _request_context(request: Request) -> tuple[str, str]:
+    return request.headers.get("user-agent", ""), request.client.host if request.client else ""
+
+
+def _admin_only(owner_only: bool = False) -> dict:
+    context = current_context()
+    permitted = context.get("platform_role") == "owner" if owner_only else is_platform_admin()
+    if not permitted:
+        raise HTTPException(403, "Platform administrator access required")
+    return context
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return LOGIN_TEMPLATE_PATH.read_text(encoding="utf-8").replace("{{APP_TITLE}}", APP_TITLE)
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    context = load_session(request.cookies.get(SESSION_COOKIE, ""))
+    registration = row("SELECT value FROM platform_settings WHERE key='registration_mode'")
+    return {
+        "authenticated": bool(context), "setup_required": not users_exist(),
+        "registration_mode": registration["value"] if registration else "closed",
+        "user": {key: context.get(key) for key in ("email", "name", "platform_role", "organisation_role", "organisation_name", "must_change_password", "csrf_token")} if context else None,
+    }
+
+
+@app.post("/api/auth/setup-owner")
+def setup_owner(request: Request, body: dict):
+    if users_exist():
+        raise HTTPException(409, "The platform owner already exists")
+    if not BOOTSTRAP_TOKEN:
+        raise HTTPException(503, "Set INTRASTAT_BOOTSTRAP_TOKEN in Portainer, redeploy, then create the owner account")
+    if not secrets.compare_digest(str(body.get("setup_code", "")), BOOTSTRAP_TOKEN):
+        raise HTTPException(403, "The setup code is incorrect")
+    email = str(body.get("email", "")).strip().casefold()
+    name = str(body.get("name", "")).strip()
+    organisation = str(body.get("organisation", "")).strip() or "My organisation"
+    if not name or "@" not in email:
+        raise HTTPException(422, "Enter your name and a valid email address")
+    try:
+        password_hash = hash_password(str(body.get("password", "")))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    now = utc_now()
+    with transaction() as connection:
+        if connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+            raise HTTPException(409, "The platform owner already exists")
+        connection.execute("UPDATE organisations SET name=? WHERE id=1", (organisation,))
+        cursor = connection.execute(
+            """INSERT INTO users(email,email_normalized,name,password_hash,status,platform_role,email_verified_at,created_at,updated_at)
+               VALUES(?,?,?,?, 'active','owner',?,?,?)""",
+            (email, email, name, password_hash, now, now, now),
+        )
+        user_id = cursor.lastrowid
+        connection.execute(
+            "INSERT INTO organisation_memberships(organisation_id,user_id,role,status,created_at) VALUES(1,?,'owner','active',?)",
+            (user_id, now),
+        )
+    raw, _ = create_session(user_id, 1, *_request_context(request))
+    response = JSONResponse({"ok": True})
+    _set_session_cookie(response, raw)
+    return response
+
+
+@app.post("/api/auth/login")
+def login(request: Request, body: dict):
+    email = str(body.get("email", "")).strip().casefold()
+    _, ip_address = _request_context(request)
+    if login_blocked(email, ip_address):
+        raise HTTPException(429, "Too many attempts. Wait 15 minutes and try again.")
+    user = authenticate(email, str(body.get("password", "")), ip_address)
+    membership = first_membership(user["id"]) if user else None
+    if not user or not membership:
+        raise HTTPException(401, "Email or password is incorrect")
+    raw, _ = create_session(user["id"], membership["organisation_id"], *_request_context(request))
+    response = JSONResponse({"ok": True})
+    _set_session_cookie(response, raw)
+    return response
+
+
+@app.post("/api/auth/register")
+def register_account(request: Request, body: dict):
+    setting = row("SELECT value FROM platform_settings WHERE key='registration_mode'")
+    mode = setting["value"] if setting else "closed"
+    if mode not in {"approval_required", "open"}:
+        raise HTTPException(403, "Registration is currently closed")
+    email = str(body.get("email", "")).strip().casefold()
+    _, ip_address = _request_context(request)
+    if login_blocked(email, ip_address):
+        raise HTTPException(429, "Too many requests. Wait 15 minutes and try again.")
+    name = str(body.get("name", "")).strip()
+    organisation = str(body.get("organisation", "")).strip()
+    if not name or not organisation or "@" not in email:
+        raise HTTPException(422, "Enter your name, organisation and a valid email")
+    try:
+        password_hash = hash_password(str(body.get("password", "")))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    now = utc_now()
+    with transaction() as connection:
+        connection.execute("INSERT INTO login_attempts(email_normalized,succeeded,ip_address,created_at) VALUES(?,0,?,?)", (email[:320], ip_address[:80], now))
+    try:
+        with transaction() as connection:
+            cursor = connection.execute(
+                """INSERT INTO users(email,email_normalized,name,password_hash,status,requested_organisation,created_at,updated_at)
+                   VALUES(?,?,?,?, 'pending',?,?,?)""",
+                (email, email, name, password_hash, organisation, now, now),
+            )
+            connection.execute(
+                "INSERT INTO security_events(actor_user_id,action,target_type,target_id,outcome,details,created_at) VALUES(NULL,'auth.registration_requested','user',?,'success',?,?)",
+                (str(cursor.lastrowid), f"organisation={organisation}"[:500], now),
+            )
+    except Exception as error:
+        if "UNIQUE" not in str(error).upper():
+            raise
+    return {"ok": True, "message": "Your request was received. The platform owner must approve it before sign-in."}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    audit("auth.logout")
+    revoke_session(request.cookies.get(SESSION_COOKIE, ""))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@app.post("/api/auth/change-password")
+def change_password(request: Request, body: dict):
+    context = current_context()
+    user = row("SELECT password_hash FROM users WHERE id=?", (context["user_id"],))
+    if not user or not verify_password(user["password_hash"], str(body.get("current_password", ""))):
+        raise HTTPException(401, "Current password is incorrect")
+    try:
+        replacement = hash_password(str(body.get("new_password", "")))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    now = utc_now()
+    current_token_hash = hashlib.sha256(request.cookies.get(SESSION_COOKIE, "").encode()).hexdigest()
+    with transaction() as connection:
+        connection.execute("UPDATE users SET password_hash=?,must_change_password=0,updated_at=? WHERE id=?", (replacement, now, context["user_id"]))
+        connection.execute("UPDATE user_sessions SET revoked_at=? WHERE user_id=? AND token_hash<>? AND revoked_at=''", (now, context["user_id"], current_token_hash))
+    audit("auth.password_changed")
+    return {"ok": True}
+
+
+@app.get("/api/admin/overview")
+def admin_overview():
+    _admin_only()
+    settings = {item["key"]: item["value"] for item in rows("SELECT key,value FROM platform_settings")}
+    accounts = rows(
+        """SELECT u.id,u.email,u.name,u.status,u.platform_role,u.requested_organisation,u.email_verified_at,u.last_login_at,u.created_at,
+                  COUNT(DISTINCT m.organisation_id) AS organisation_count
+           FROM users u LEFT JOIN organisation_memberships m ON m.user_id=u.id
+           GROUP BY u.id ORDER BY u.created_at DESC"""
+    )
+    organisations = rows(
+        """SELECT o.id,o.name,o.created_at,COUNT(DISTINCT m.user_id) AS seats,
+                  COUNT(DISTINCT i.id) AS invoices
+           FROM organisations o LEFT JOIN organisation_memberships m ON m.organisation_id=o.id
+           LEFT JOIN invoices i ON i.organisation_id=o.id GROUP BY o.id ORDER BY o.created_at DESC"""
+    )
+    events = rows("SELECT action,outcome,target_type,target_id,created_at FROM security_events ORDER BY id DESC LIMIT 50")
+    return {"accounts": accounts, "organisations": organisations, "settings": settings, "events": events, "billing": subscription_status(_org_id())}
+
+
+@app.get("/api/billing/status")
+def get_billing_status():
+    return subscription_status(_org_id())
+
+
+@app.post("/api/admin/accounts")
+def admin_create_account(body: dict):
+    context = _admin_only(True)
+    email = str(body.get("email", "")).strip().casefold()
+    name = str(body.get("name", "")).strip()
+    role = str(body.get("role", "viewer"))
+    if role not in {"owner", "administrator", "preparer", "reviewer", "viewer"} or not name or "@" not in email:
+        raise HTTPException(422, "Enter a valid name, email and role")
+    try:
+        password_hash = hash_password(str(body.get("temporary_password", "")))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    now = utc_now()
+    try:
+        with transaction() as connection:
+            cursor = connection.execute(
+                """INSERT INTO users(email,email_normalized,name,password_hash,status,email_verified_at,must_change_password,created_at,updated_at)
+                   VALUES(?,?,?,?, 'active',?,1,?,?)""",
+                (email, email, name, password_hash, now, now, now),
+            )
+            user_id = cursor.lastrowid
+            connection.execute(
+                "INSERT INTO organisation_memberships(organisation_id,user_id,role,status,created_at) VALUES(?,?,?,'active',?)",
+                (context["organisation_id"], user_id, role, now),
+            )
+    except Exception as error:
+        if "UNIQUE" in str(error).upper():
+            raise HTTPException(409, "An account with this email already exists") from error
+        raise
+    audit("admin.account_created", target_type="user", target_id=str(user_id), details=f"role={role}")
+    return {"id": user_id, "email": email, "status": "active"}
+
+
+@app.patch("/api/admin/settings")
+def admin_settings(body: dict):
+    _admin_only(True)
+    allowed = {"registration_mode": {"closed", "approval_required"}}
+    changed = {}
+    with transaction() as connection:
+        for key, choices in allowed.items():
+            if key in body:
+                value = str(body[key])
+                if value not in choices:
+                    raise HTTPException(422, f"Invalid {key}")
+                connection.execute("UPDATE platform_settings SET value=?,updated_at=? WHERE key=?", (value, utc_now(), key))
+                changed[key] = value
+    audit("admin.settings_changed", details=json.dumps(changed))
+    return changed
+
+
+@app.post("/api/admin/accounts/{user_id}/activate")
+def admin_activate_account(user_id: int):
+    context = _admin_only(True)
+    now = utc_now()
+    with transaction() as connection:
+        user = connection.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user:
+            raise HTTPException(404, "Account not found")
+        if user["status"] != "pending":
+            raise HTTPException(409, "Only pending accounts can be activated")
+        cursor = connection.execute("INSERT INTO organisations(name,created_at) VALUES(?,?)", (user["requested_organisation"] or f"{user['name']}'s organisation", now))
+        organisation_id = cursor.lastrowid
+        connection.execute("INSERT INTO profiles(organisation_id,updated_at) VALUES(?,?)", (organisation_id, now))
+        connection.execute(
+            "INSERT INTO organisation_memberships(organisation_id,user_id,role,status,created_at) VALUES(?,?,'owner','active',?)",
+            (organisation_id, user_id, now),
+        )
+        connection.execute("UPDATE users SET status='active',updated_at=? WHERE id=?", (now, user_id))
+        connection.execute(
+            "INSERT INTO organisation_subscriptions(organisation_id,plan_id,status,updated_at) VALUES(?,'internal','inactive',?)",
+            (organisation_id, now),
+        )
+    audit("admin.account_activated", target_type="user", target_id=str(user_id), details=f"actor={context['user_id']}")
+    return {"ok": True, "organisation_id": organisation_id}
+
+
+@app.patch("/api/admin/accounts/{user_id}/status")
+def admin_account_status(user_id: int, body: dict):
+    context = _admin_only(True)
+    status = str(body.get("status", ""))
+    if status not in {"active", "suspended"}:
+        raise HTTPException(422, "Status must be active or suspended")
+    if user_id == context["user_id"]:
+        raise HTTPException(409, "You cannot suspend your own platform-owner account")
+    with transaction() as connection:
+        found = connection.execute("SELECT id,platform_role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not found:
+            raise HTTPException(404, "Account not found")
+        if found["platform_role"] == "owner":
+            raise HTTPException(409, "The platform-owner account cannot be suspended here")
+        connection.execute("UPDATE users SET status=?,updated_at=? WHERE id=?", (status, utc_now(), user_id))
+        if status == "suspended":
+            connection.execute("UPDATE user_sessions SET revoked_at=? WHERE user_id=? AND revoked_at=''", (utc_now(), user_id))
+    audit(f"admin.account_{status}", target_type="user", target_id=str(user_id))
+    return {"ok": True, "status": status}
+
+
 def _profile() -> dict:
-    return row("SELECT * FROM profiles WHERE organisation_id = ?", (ORG_ID,)) or {}
+    return row("SELECT * FROM profiles WHERE organisation_id = ?", (_org_id(),)) or {}
 
 
 def _invoice(invoice_id: int) -> dict:
-    found = row("SELECT * FROM invoices WHERE id = ? AND organisation_id = ?", (invoice_id, ORG_ID))
+    found = row("SELECT * FROM invoices WHERE id = ? AND organisation_id = ?", (invoice_id, _org_id()))
     if not found:
         raise HTTPException(404, "Invoice not found")
     return found
@@ -178,14 +490,14 @@ def _clean_value(field: str, value):
 def _record_event(connection, invoice_id: int | None, event_type: str, details: dict | str = ""):
     connection.execute(
         "INSERT INTO review_events(organisation_id, invoice_id, event_type, details, created_at) VALUES(?,?,?,?,?)",
-        (ORG_ID, invoice_id, event_type, json.dumps(details) if isinstance(details, dict) else details, utc_now()),
+        (_org_id(), invoice_id, event_type, json.dumps(details) if isinstance(details, dict) else details, utc_now()),
     )
 
 
 def _invalidate(connection, invoice_id: int, event_type: str, details: dict):
     connection.execute(
         "UPDATE invoices SET status = 'needs_review', revision = revision + 1, updated_at = ? WHERE id = ? AND organisation_id = ?",
-        (utc_now(), invoice_id, ORG_ID),
+        (utc_now(), invoice_id, _org_id()),
     )
     _record_event(connection, invoice_id, event_type, details)
 
@@ -199,7 +511,7 @@ def _suggest_from_catalogue(connection, invoice_id: int):
             continue
         fact = connection.execute(
             "SELECT * FROM product_facts WHERE organisation_id = ? AND supplier_vat = ? AND sku = ?",
-            (ORG_ID, supplier_vat, line["sku"]),
+            (_org_id(), supplier_vat, line["sku"]),
         ).fetchone()
         if not fact:
             continue
@@ -220,7 +532,7 @@ def _suggest_from_catalogue(connection, invoice_id: int):
 
 
 def _supplier_profiles() -> list[dict]:
-    return rows("SELECT * FROM supplier_profiles WHERE organisation_id=?", (ORG_ID,))
+    return rows("SELECT * FROM supplier_profiles WHERE organisation_id=?", (_org_id(),))
 
 
 def _remember_supplier(connection, invoice: dict) -> None:
@@ -234,7 +546,7 @@ def _remember_supplier(connection, invoice: dict) -> None:
         supplier_name=excluded.supplier_name,flow=excluded.flow,currency=excluded.currency,
         consignment_country=excluded.consignment_country,mode_transport=excluded.mode_transport,
         terms_delivery=excluded.terms_delivery,nature_transaction=excluded.nature_transaction,updated_at=excluded.updated_at""",
-        (ORG_ID, supplier_vat, invoice["supplier_name"], invoice["flow"], invoice["currency"], invoice["consignment_country"],
+        (_org_id(), supplier_vat, invoice["supplier_name"], invoice["flow"], invoice["currency"], invoice["consignment_country"],
          invoice["mode_transport"], invoice["terms_delivery"], invoice["nature_transaction"], now, now),
     )
 
@@ -254,13 +566,13 @@ def _store_supplier_template(connection, invoice: dict, mapping: list[dict], fin
     if not clean:
         return None
     _remember_supplier(connection, invoice)
-    current = connection.execute("SELECT COALESCE(MAX(version),0) FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat)).fetchone()[0]
+    current = connection.execute("SELECT COALESCE(MAX(version),0) FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat)).fetchone()[0]
     version = current + 1
-    connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat))
+    connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat))
     connection.execute("INSERT INTO supplier_template_versions(organisation_id,supplier_vat,version,layout_fingerprint,layout_mapping,source_invoice_id,source,active,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                       (ORG_ID, supplier_vat, version, fingerprint, json.dumps(clean), invoice.get("id"), source, 1, utc_now()))
+                       (_org_id(), supplier_vat, version, fingerprint, json.dumps(clean), invoice.get("id"), source, 1, utc_now()))
     connection.execute("UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=?,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
-                       (json.dumps(clean), fingerprint, version, utc_now(), ORG_ID, supplier_vat))
+                       (json.dumps(clean), fingerprint, version, utc_now(), _org_id(), supplier_vat))
     return version
 
 
@@ -280,7 +592,7 @@ def bootstrap():
         """SELECT i.*, d.filename,
         (SELECT COUNT(*) FROM invoice_lines l WHERE l.invoice_id=i.id AND l.line_kind='goods') goods_count
         FROM invoices i LEFT JOIN documents d ON d.id=i.document_id
-        WHERE i.organisation_id=? ORDER BY i.updated_at DESC""", (ORG_ID,)
+        WHERE i.organisation_id=? ORDER BY i.updated_at DESC""", (_org_id(),)
     )
     profile = _profile()
     for invoice in invoice_list:
@@ -295,8 +607,11 @@ def bootstrap():
     }
     return {
         "app_title": APP_TITLE, "profile": profile, "invoices": invoice_list, "stats": stats,
-        "schema": inspect_schema(SCHEMA_PATH), "catalogue_count": row("SELECT COUNT(*) total FROM product_facts WHERE organisation_id=?", (ORG_ID,))["total"],
+        "schema": inspect_schema(SCHEMA_PATH), "catalogue_count": row("SELECT COUNT(*) total FROM product_facts WHERE organisation_id=?", (_org_id(),))["total"],
         "current_period": date.today().strftime("%Y-%m"),
+        "auth": {key: current_context().get(key) for key in (
+            "user_id", "email", "name", "platform_role", "organisation_id", "organisation_name", "organisation_role", "csrf_token"
+        )},
     }
 
 
@@ -317,7 +632,7 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
         digest = hashlib.sha256(data).hexdigest()
         existing = row(
             "SELECT i.id FROM documents d JOIN invoices i ON i.document_id=d.id WHERE d.organisation_id=? AND d.sha256=?",
-            (ORG_ID, digest),
+            (_org_id(), digest),
         )
         if existing:
             results.append({"filename": filename, "invoice_id": existing["id"], "duplicate": True})
@@ -346,12 +661,12 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             document_id = connection.execute(
                 """INSERT INTO documents(organisation_id,sha256,filename,storage_name,content_type,size_bytes,page_count,extracted_text,extraction_method,created_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (ORG_ID, digest, filename, storage_name, "application/pdf", len(data), draft["page_count"], extracted_text, draft["adapter"], now),
+                (_org_id(), digest, filename, storage_name, "application/pdf", len(data), draft["page_count"], extracted_text, draft["adapter"], now),
             ).lastrowid
             invoice_columns = [field for field in INVOICE_FIELDS if field in draft]
             invoice_id = connection.execute(
                 f"INSERT INTO invoices(organisation_id,document_id,{','.join(invoice_columns)},created_at,updated_at) VALUES(?,?,{','.join('?' for _ in invoice_columns)},?,?)",
-                (ORG_ID, document_id, *(draft[field] for field in invoice_columns), now, now),
+                (_org_id(), document_id, *(draft[field] for field in invoice_columns), now, now),
             ).lastrowid
             positions_to_ids = {}
             pending_links = []
@@ -381,7 +696,7 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             meta = draft.get("ai_meta", {})
             if meta:
                 connection.execute("INSERT INTO extraction_runs(organisation_id,invoice_id,method,status,message,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
-                                   (ORG_ID, invoice_id, "api-ai", "completed" if draft.get("lines") else "failed",
+                                   (_org_id(), invoice_id, "api-ai", "completed" if draft.get("lines") else "failed",
                                     json.dumps({"request_id": meta.get("request_id", ""), "response_id": meta.get("response_id", ""), "error_code": meta.get("error_code", ""), "error": meta.get("error", ""), "usage": meta.get("usage", {})}),
                                     meta.get("duration_ms", 0), now))
             _record_event(connection, invoice_id, "invoice_uploaded", {"filename": filename, "adapter": draft["adapter"], "template_version": template_version})
@@ -391,7 +706,7 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
 
 @app.get("/api/documents/{document_id}/file")
 def document_file(document_id: int):
-    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (document_id, ORG_ID))
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (document_id, _org_id()))
     if not document:
         raise HTTPException(404, "Document not found")
     path = UPLOAD_DIR / document["storage_name"]
@@ -407,7 +722,7 @@ def document_file(document_id: int):
 
 @app.get("/api/documents/{document_id}/pages/{page_number}.png")
 def document_page_image(document_id: int, page_number: int):
-    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (document_id, ORG_ID))
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (document_id, _org_id()))
     if not document:
         raise HTTPException(404, "Document not found")
     with pdfplumber.open(UPLOAD_DIR / document["storage_name"]) as pdf:
@@ -425,7 +740,7 @@ def get_supplier_mapping(invoice_id: int):
     if not invoice.get("document_id"):
         raise HTTPException(422, "This invoice has no PDF.")
     supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
-    profile = row("SELECT * FROM supplier_profiles WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat)) if supplier_vat else None
+    profile = row("SELECT * FROM supplier_profiles WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat)) if supplier_vat else None
     return {"document_id": invoice["document_id"], "supplier": invoice["supplier_name"], "supplier_vat": supplier_vat,
             "page_count": row("SELECT page_count FROM documents WHERE id=?", (invoice["document_id"],))["page_count"],
             "regions": json.loads(profile.get("layout_mapping") or "[]") if profile else []}
@@ -448,7 +763,7 @@ def _mapping_region_text(document: dict, region: dict) -> str:
 @app.post("/api/invoices/{invoice_id}/supplier-mapping/preview")
 async def preview_supplier_mapping(invoice_id: int, request: Request):
     invoice = _invoice(invoice_id)
-    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), _org_id()))
     if not document:
         raise HTTPException(422, "This invoice has no PDF.")
     region = (await request.json()).get("region", {})
@@ -458,7 +773,7 @@ async def preview_supplier_mapping(invoice_id: int, request: Request):
 @app.post("/api/invoices/{invoice_id}/supplier-mapping/preview-all")
 async def preview_all_supplier_mapping(invoice_id: int, request: Request):
     invoice = _invoice(invoice_id)
-    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), _org_id()))
     if not document:
         raise HTTPException(422, "This invoice has no PDF.")
     regions = (await request.json()).get("regions", [])[:40]
@@ -483,7 +798,7 @@ async def save_supplier_mapping(invoice_id: int, request: Request):
         if values["width"] < .005 or values["height"] < .005:
             continue
         clean.append({"field": field, "page": max(1, int(region.get("page", 1))), **values})
-    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), _org_id()))
     if not document:
         raise HTTPException(422, "This invoice has no PDF.")
     unreadable = [item["field"] for item in clean if not _mapping_region_text(document, item)]
@@ -500,21 +815,21 @@ async def save_supplier_mapping(invoice_id: int, request: Request):
 def supplier_template_history(invoice_id: int):
     invoice = _invoice(invoice_id)
     supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
-    return rows("SELECT id,version,layout_fingerprint,source,active,created_at FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=? ORDER BY version DESC", (ORG_ID, supplier_vat))
+    return rows("SELECT id,version,layout_fingerprint,source,active,created_at FROM supplier_template_versions WHERE organisation_id=? AND supplier_vat=? ORDER BY version DESC", (_org_id(), supplier_vat))
 
 
 @app.post("/api/invoices/{invoice_id}/supplier-templates/{template_id}/activate")
 def activate_supplier_template(invoice_id: int, template_id: int):
     invoice = _invoice(invoice_id)
     supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
-    template = row("SELECT * FROM supplier_template_versions WHERE id=? AND organisation_id=? AND supplier_vat=?", (template_id, ORG_ID, supplier_vat))
+    template = row("SELECT * FROM supplier_template_versions WHERE id=? AND organisation_id=? AND supplier_vat=?", (template_id, _org_id(), supplier_vat))
     if not template:
         raise HTTPException(404, "Supplier template version not found.")
     with transaction() as connection:
-        connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (ORG_ID, supplier_vat))
+        connection.execute("UPDATE supplier_template_versions SET active=0 WHERE organisation_id=? AND supplier_vat=?", (_org_id(), supplier_vat))
         connection.execute("UPDATE supplier_template_versions SET active=1 WHERE id=?", (template_id,))
         connection.execute("UPDATE supplier_profiles SET layout_mapping=?,layout_fingerprint=?,layout_version=?,updated_at=? WHERE organisation_id=? AND supplier_vat=?",
-                           (template["layout_mapping"], template["layout_fingerprint"], template["version"], utc_now(), ORG_ID, supplier_vat))
+                           (template["layout_mapping"], template["layout_fingerprint"], template["version"], utc_now(), _org_id(), supplier_vat))
         _record_event(connection, invoice_id, "supplier_template_rollback", {"version": template["version"]})
     return {"activated": True, "version": template["version"]}
 
@@ -525,7 +840,7 @@ def extract_again(invoice_id: int, use_ai: bool = False):
     invoice = _invoice(invoice_id)
     if invoice["status"] == "submitted":
         raise HTTPException(409, "Submitted invoices are locked.")
-    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), ORG_ID))
+    document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), _org_id()))
     if not document:
         raise HTTPException(422, "This manual invoice has no PDF to extract.")
     draft, extracted_text, _ = extract_invoice(UPLOAD_DIR / document["storage_name"], document["filename"], _supplier_profiles(), force_ai=use_ai)
@@ -576,7 +891,7 @@ def extract_again(invoice_id: int, use_ai: bool = False):
         _record_event(connection, invoice_id, "invoice_reextracted", {"adapter": draft["adapter"], "template_version": template_version})
         meta = draft.get("ai_meta", {})
         connection.execute("INSERT INTO extraction_runs(organisation_id,invoice_id,method,status,message,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
-                           (ORG_ID, invoice_id, draft["adapter"], "completed", json.dumps({"notes": draft["notes"][-700:], "request_id": meta.get("request_id", ""), "usage": meta.get("usage", {})}), round((time.monotonic()-started)*1000), now))
+                           (_org_id(), invoice_id, draft["adapter"], "completed", json.dumps({"notes": draft["notes"][-700:], "request_id": meta.get("request_id", ""), "usage": meta.get("usage", {})}), round((time.monotonic()-started)*1000), now))
     return _payload(invoice_id)
 
 
@@ -594,7 +909,7 @@ def create_manual_invoice():
         invoice_id = connection.execute(
             """INSERT INTO invoices(organisation_id,mode_transport,nature_transaction,flow,notes,created_at,updated_at)
             VALUES(?,?,?,?,?,?,?)""",
-            (ORG_ID, profile.get("default_mot", "4"), profile.get("default_not", "11"), profile.get("default_flow", "A"), "Created manually.", now, now),
+            (_org_id(), profile.get("default_mot", "4"), profile.get("default_not", "11"), profile.get("default_flow", "A"), "Created manually.", now, now),
         ).lastrowid
         _record_event(connection, invoice_id, "invoice_created", {})
     return _payload(invoice_id)
@@ -619,7 +934,7 @@ async def update_invoice(invoice_id: int, request: Request):
         raise HTTPException(422, "No supported fields supplied")
     with transaction() as connection:
         assignments = ", ".join(f"{field}=?" for field in updates)
-        connection.execute(f"UPDATE invoices SET {assignments} WHERE id=? AND organisation_id=?", (*updates.values(), invoice_id, ORG_ID))
+        connection.execute(f"UPDATE invoices SET {assignments} WHERE id=? AND organisation_id=?", (*updates.values(), invoice_id, _org_id()))
         if updates.get("consignment_country"):
             connection.execute("UPDATE invoice_lines SET consignment_country=?,updated_at=? WHERE invoice_id=? AND line_kind='goods' AND consignment_country=''",
                                (updates["consignment_country"], utc_now(), invoice_id))
@@ -665,7 +980,7 @@ async def create_line(invoice_id: int, request: Request):
 @app.patch("/api/lines/{line_id}")
 async def update_line(line_id: int, request: Request):
     found = row("SELECT l.*,i.organisation_id FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?", (line_id,))
-    if not found or found["organisation_id"] != ORG_ID:
+    if not found or found["organisation_id"] != _org_id():
         raise HTTPException(404, "Line not found")
     if _invoice(found["invoice_id"])["status"] == "submitted":
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
@@ -726,11 +1041,11 @@ async def review_lines(invoice_id: int, request: Request):
 def cn_suggestions(line_id: int):
     found = row("""SELECT l.*,i.supplier_name,i.supplier_vat_country,i.supplier_vat_number,i.organisation_id
                  FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?""", (line_id,))
-    if not found or found["organisation_id"] != ORG_ID:
+    if not found or found["organisation_id"] != _org_id():
         raise HTTPException(404, "Line not found")
     product_text = " ".join(filter(None, [found.get("description"), found.get("sku"), found.get("notes")]))
     candidates = search_cn(product_text, 18)
-    remembered = rows("SELECT * FROM product_facts WHERE organisation_id=? AND sku=? AND hs_code<>''", (ORG_ID, found.get("sku", ""))) if found.get("sku") else []
+    remembered = rows("SELECT * FROM product_facts WHERE organisation_id=? AND sku=? AND hs_code<>''", (_org_id(), found.get("sku", ""))) if found.get("sku") else []
     by_code = {item["code"]: item for item in candidates}
     for fact in remembered:
         requirement = cn_requirement(fact["hs_code"])
@@ -754,7 +1069,7 @@ def cn_suggestions(line_id: int):
 @app.delete("/api/lines/{line_id}")
 def delete_line(line_id: int):
     found = row("SELECT l.invoice_id,i.organisation_id FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?", (line_id,))
-    if not found or found["organisation_id"] != ORG_ID:
+    if not found or found["organisation_id"] != _org_id():
         raise HTTPException(404, "Line not found")
     if _invoice(found["invoice_id"])["status"] == "submitted":
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
@@ -774,9 +1089,9 @@ def delete_invoice(invoice_id: int):
         raise HTTPException(409, "Submitted invoices are locked and cannot be deleted.")
     document = row("SELECT storage_name FROM documents WHERE id=?", (invoice.get("document_id"),)) if invoice.get("document_id") else None
     with transaction() as connection:
-        connection.execute("DELETE FROM invoices WHERE id=? AND organisation_id=?", (invoice_id, ORG_ID))
+        connection.execute("DELETE FROM invoices WHERE id=? AND organisation_id=?", (invoice_id, _org_id()))
         if invoice.get("document_id"):
-            connection.execute("DELETE FROM documents WHERE id=? AND organisation_id=?", (invoice["document_id"], ORG_ID))
+            connection.execute("DELETE FROM documents WHERE id=? AND organisation_id=?", (invoice["document_id"], _org_id()))
         _record_event(connection, None, "invoice_deleted", {"invoice_number": invoice["invoice_number"]})
     if document:
         (UPLOAD_DIR / document["storage_name"]).unlink(missing_ok=True)
@@ -914,7 +1229,7 @@ def reopen_invoice(invoice_id: int):
 
 @app.get("/api/catalogue")
 def get_catalogue():
-    return rows("SELECT * FROM product_facts WHERE organisation_id=? ORDER BY supplier_name,sku", (ORG_ID,))
+    return rows("SELECT * FROM product_facts WHERE organisation_id=? ORDER BY supplier_name,sku", (_org_id(),))
 
 
 @app.post("/api/catalogue")
@@ -934,7 +1249,7 @@ async def save_catalogue_fact(request: Request):
             description=excluded.description,hs_code=excluded.hs_code,origin_country=excluded.origin_country,
             unit_net_mass=excluded.unit_net_mass,supp_unit=excluded.supp_unit,evidence=excluded.evidence,
             effective_from=excluded.effective_from,verified_at=excluded.verified_at""",
-            (ORG_ID, values["supplier_vat"], values["supplier_name"], sku, values["description"], values["hs_code"],
+            (_org_id(), values["supplier_vat"], values["supplier_name"], sku, values["description"], values["hs_code"],
              values["origin_country"], values["unit_net_mass"], values["supp_unit"], values["evidence"],
              values["effective_from"], utc_now()),
         )
@@ -945,7 +1260,7 @@ async def save_catalogue_fact(request: Request):
 def save_catalogue_from_line(line_id: int):
     found = row("""SELECT l.*,i.supplier_name,i.supplier_vat_country,i.supplier_vat_number,i.organisation_id
                    FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?""", (line_id,))
-    if not found or found["organisation_id"] != ORG_ID or not found["sku"]:
+    if not found or found["organisation_id"] != _org_id() or not found["sku"]:
         raise HTTPException(422, "This line needs a SKU before it can be remembered")
     unit_mass = found.get("unit_net_mass", "")
     try:
@@ -961,7 +1276,7 @@ def save_catalogue_from_line(line_id: int):
             supplier_name=excluded.supplier_name,description=excluded.description,hs_code=excluded.hs_code,
             origin_country=excluded.origin_country,unit_net_mass=excluded.unit_net_mass,
             supp_unit=excluded.supp_unit,evidence=excluded.evidence,verified_at=excluded.verified_at""",
-            (ORG_ID, supplier_vat, found["supplier_name"], found["sku"], found["description"], found["hs_code"],
+            (_org_id(), supplier_vat, found["supplier_name"], found["sku"], found["description"], found["hs_code"],
              found["origin_country"], unit_mass, found["supp_unit"], f"Verified from invoice {found['invoice_id']}", "", utc_now()),
         )
         _record_event(connection, found["invoice_id"], "product_remembered", {"line_id": line_id, "sku": found["sku"]})
@@ -971,7 +1286,7 @@ def save_catalogue_from_line(line_id: int):
 @app.delete("/api/catalogue/{fact_id}")
 def delete_catalogue_fact(fact_id: int):
     with transaction() as connection:
-        result = connection.execute("DELETE FROM product_facts WHERE id=? AND organisation_id=?", (fact_id, ORG_ID))
+        result = connection.execute("DELETE FROM product_facts WHERE id=? AND organisation_id=?", (fact_id, _org_id()))
         if result.rowcount == 0:
             raise HTTPException(404, "Catalogue item not found")
     return {"deleted": True}
@@ -990,10 +1305,10 @@ async def update_profile(request: Request):
         raise HTTPException(422, "No supported fields supplied")
     with transaction() as connection:
         assignments = ", ".join(f"{field}=?" for field in updates)
-        connection.execute(f"UPDATE profiles SET {assignments},updated_at=? WHERE organisation_id=?", (*updates.values(), utc_now(), ORG_ID))
+        connection.execute(f"UPDATE profiles SET {assignments},updated_at=? WHERE organisation_id=?", (*updates.values(), utc_now(), _org_id()))
         connection.execute(
             "UPDATE invoices SET status='needs_review',updated_at=? WHERE organisation_id=? AND status IN ('approved','exported')",
-            (utc_now(), ORG_ID),
+            (utc_now(), _org_id()),
         )
         _record_event(connection, None, "profile_updated", {"fields": list(updates)})
     return _profile()
@@ -1021,7 +1336,7 @@ def _approved_for_period(period: str, flow: str) -> tuple[list[dict], dict[int, 
         raise HTTPException(422, "Period must be YYYY-MM")
     if flow not in {"A", "D"}:
         raise HTTPException(422, "Flow must be A for arrivals or D for dispatches")
-    invoices = rows("SELECT * FROM invoices WHERE organisation_id=? AND arrival_date LIKE ? AND flow=? AND status IN ('approved','exported') ORDER BY id", (ORG_ID, period + "%", flow))
+    invoices = rows("SELECT * FROM invoices WHERE organisation_id=? AND arrival_date LIKE ? AND flow=? AND status IN ('approved','exported') ORDER BY id", (_org_id(), period + "%", flow))
     lines_by_invoice = {invoice["id"]: _lines(invoice["id"]) for invoice in invoices}
     profile = _profile()
     return invoices, lines_by_invoice, profile
@@ -1054,7 +1369,7 @@ def _save_export(period: str, flow: str, fmt: str, data: bytes, extension: str, 
         connection.execute(
             """INSERT INTO export_snapshots(organisation_id,period,flow,format,filename,sha256,row_count,invoice_ids,created_at)
             VALUES(?,?,?,?,?,?,?,?,?)""",
-            (ORG_ID, period, flow, fmt, filename, digest, len(result_rows), json.dumps(invoice_ids), utc_now()),
+            (_org_id(), period, flow, fmt, filename, digest, len(result_rows), json.dumps(invoice_ids), utc_now()),
         )
         if invoice_ids:
             placeholders = ",".join("?" for _ in invoice_ids)
@@ -1093,7 +1408,7 @@ def export_xml(period: str, flow: str = "A"):
 
 @app.get("/api/exports")
 def get_exports():
-    return rows("SELECT * FROM export_snapshots WHERE organisation_id=? ORDER BY created_at DESC", (ORG_ID,))
+    return rows("SELECT * FROM export_snapshots WHERE organisation_id=? ORDER BY created_at DESC", (_org_id(),))
 
 
 @app.post("/api/exports/{export_id}/submitted")
@@ -1102,7 +1417,7 @@ async def mark_submitted(export_id: int, request: Request):
     reference = str(body.get("declaration_reference", "")).strip()
     if not reference:
         raise HTTPException(422, "Enter the declaration or receipt reference")
-    snapshot = row("SELECT * FROM export_snapshots WHERE id=? AND organisation_id=?", (export_id, ORG_ID))
+    snapshot = row("SELECT * FROM export_snapshots WHERE id=? AND organisation_id=?", (export_id, _org_id()))
     if not snapshot:
         raise HTTPException(404, "Export not found")
     invoice_ids = json.loads(snapshot["invoice_ids"])
