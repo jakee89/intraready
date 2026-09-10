@@ -38,6 +38,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Organisation-scoped accounts with owner, administrator, preparer, reviewer and viewer roles
 - Platform administration dashboard with account approval, usage visibility and closed/approval-only registration
 - Inactive billing plans and entitlement storage; this version cannot create payments or charges
+- Encrypted in-app OpenAI key storage, model selection, budget controls and token/cost dashboard
 
 CN-list importing, receipt-file upload and automatic NSO portal submission are not included. Manual review remains required. The XML schema is not bundled because the NSO download returned a Cloudflare block page during development; use the one-time schema upload in Organisation settings.
 
@@ -74,7 +75,7 @@ Open `http://SERVER-IP:8088`. On the first visit, create the platform-owner acco
 
 Keep registration **Closed** until the app is behind HTTPS and you are ready to approve account requests. When HTTPS is configured, set `INTRASTAT_AUTH_COOKIE_SECURE=true`. Leaving it false is required only for a private plain-HTTP LAN installation.
 
-Create an API key at https://platform.openai.com/api-keys and set `INTRASTAT_OPENAI_API_KEY` in `.env` or in the Portainer stack environment. The default `gpt-5.6-terra` model can be changed with `INTRASTAT_OPENAI_MODEL`. Use **Check API AI** in invoice review to verify access. The key is read only from the container environment and is never stored in SQLite or shown in the browser.
+Create an API key at https://platform.openai.com/api-keys, then save and test it under **Organisation → AI and usage**. The key is encrypted with an installation key held in the persistent data volume and is never returned to the browser. `INTRASTAT_OPENAI_API_KEY` remains available as an environment fallback for upgrades.
 
 For Portainer, either deploy `compose.yaml` from a Git repository (so its build context is available), or build the image on the server first with `docker build -t intraready:0.1.0 .` and create a stack from the same Compose definition after removing its `build:` block. The named `intraready_data` volume contains the database, source PDFs, schema and exports.
 

@@ -65,6 +65,7 @@
               </div>
             </article>
           </div>
+          <article id="aiUsageCard" class="panel ai-usage-panel"></article>
         </section>
 
         <section class="page" data-page="upload">
@@ -148,6 +149,18 @@
             <div class="section-heading"><span>04</span><div><h3>Account security</h3><p>Signed in as <strong id="securityAccountEmail"></strong>. Changing your password signs out every other session.</p></div></div>
             <button id="changePasswordButton" class="button secondary">Change password</button>
           </article>
+          <form id="aiSettingsForm" class="panel form-panel">
+            <div class="section-heading"><span>05</span><div><h3>AI and usage</h3><p>Save the key securely inside IntraReady. Uploading invoices never calls AI; only buttons clearly marked as AI can spend tokens.</p></div></div>
+            <div class="form-grid">
+              <label>OpenAI API key <span class="optional" id="aiKeyHint">Not configured</span><input name="api_key" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key"></label>
+              <label>Model<input name="model" placeholder="gpt-5.6-terra"></label>
+              <label>Monthly budget in EUR <span class="optional">Optional</span><input name="monthly_budget_eur" inputmode="decimal" placeholder="25.00"></label>
+              <label>Input price per million tokens <span class="optional">Optional estimate</span><input name="input_eur_per_million" inputmode="decimal"></label>
+              <label>Output price per million tokens <span class="optional">Optional estimate</span><input name="output_eur_per_million" inputmode="decimal"></label>
+            </div>
+            <div id="aiSettingsUsage" class="info-card slim"></div>
+            <div class="form-actions"><button id="removeAiKeyButton" class="button quiet" type="button">Remove saved key</button><button id="testAiButton" class="button secondary" type="button">Test connection</button><button class="button primary" type="submit">Save AI settings</button></div>
+          </form>
         </section>
 
         <section class="page" data-page="guide">
@@ -157,7 +170,7 @@
             <article><span>02</span><h3>Confirm the facts</h3><p>Enter the actual arrival date and country of consignment. Review each goods row and resolve charges before approval.</p><button class="text-button" data-nav="invoices">Open review queue →</button></article>
             <article><span>03</span><h3>Remember products</h3><p>After checking a recurring SKU, save its commodity code and unit net weight. Future invoices can reuse those facts.</p><button class="text-button" data-nav="catalogue">View product memory →</button></article>
             <article><span>04</span><h3>Export, then upload</h3><p>Preview rounded declaration values. Download the XSD-validated XML, upload it yourself, and record the receipt reference.</p><button class="text-button" data-nav="declarations">Build a declaration →</button></article>
-            <article><span>AI</span><h3>Connect invoice AI</h3><p>Create a secret key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI API keys ↗</a>, add it to the Portainer stack as <code>INTRASTAT_OPENAI_API_KEY</code>, and redeploy. Use “Check API AI” on an invoice. Uploading never calls AI. Click “Learn layout with AI” only for an unknown or changed layout; the confirmation explains that the PDF will be sent to OpenAI.</p><p>The default model is <code>gpt-5.6-terra</code>. Matching saved layouts are read locally without API credits. Never paste the secret key into an invoice or notes field.</p></article>
+            <article><span>AI</span><h3>Connect invoice AI</h3><p>Create a secret key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI API keys ↗</a>, then open Organisation → AI and usage to save and test it. Uploading never calls AI. Click “Learn layout with AI” only for an unknown or changed layout; the confirmation explains that the PDF will be sent to OpenAI.</p><p>Matching saved layouts are read locally without API credits. The dashboard reports tokens and optional cost estimates. Never paste the secret key into an invoice or notes field.</p></article>
             <article><span>↶</span><h3>Template history</h3><p>Every AI or manual supplier map creates a version. Open “Map supplier” to inspect versions and restore an earlier one if a changed layout produces worse results.</p></article>
           </div>
           <article class="panel reference-panel">

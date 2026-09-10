@@ -59,6 +59,12 @@ p { color: var(--muted); }
 .admin-setting { display:flex; align-items:center; justify-content:space-between; gap:28px; }
 .admin-setting p { margin:.35rem 0 0; color:var(--muted); }
 .admin-setting select { min-width:220px; }
+.ai-usage-panel { margin-top:22px; }
+.ai-usage-grid { display:grid; grid-template-columns:repeat(5,minmax(110px,1fr)); gap:12px; }
+.ai-usage-grid div { padding:14px; border:1px solid var(--line); border-radius:14px; background:var(--mint-soft); }
+.ai-usage-grid span { display:block; margin-bottom:8px; color:var(--muted); font-size:.78rem; font-weight:750; }
+.ai-usage-grid strong { font-size:1.25rem; }
+@media (max-width:900px) { .ai-usage-grid { grid-template-columns:repeat(2,1fr); } }
 .local-note { display: flex; gap: 10px; align-items: flex-start; margin: 24px 8px 0; padding-top: 18px; border-top: 1px solid rgba(255,255,255,.11); color: #d8e7e2; font-size: .76rem; font-weight: 700; }
 .local-note small { display: block; margin-top: 2px; color: #8db1a8; font-weight: 500; }
 .status-dot { width: 8px; height: 8px; margin-top: 4px; flex: none; border-radius: 50%; background: #78d6b9; box-shadow: 0 0 0 4px rgba(120,214,185,.12); }

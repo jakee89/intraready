@@ -99,7 +99,7 @@ function navigate(page, options = {}) {
   history.replaceState(null, "", `#${page}`);
   if (!options.preserveScroll) window.scrollTo({ top: 0, behavior: "smooth" });
   if (page === "catalogue") loadCatalogue();
-  if (page === "settings") renderSettings();
+  if (page === "settings") { renderSettings(); loadAiSettings(); }
   if (page === "declarations") { renderDeclarationLanding(); loadExports(); }
   if (page === "admin") loadAdmin();
 }
@@ -116,6 +116,9 @@ function renderShared() {
   $("#accountOrganisation").textContent = auth.organisation_name || "Organisation";
   $("#accountInitial").textContent = (auth.name || auth.email || "?").trim().slice(0, 1).toUpperCase();
   $("#adminNav").classList.toggle("hidden", !["owner", "support", "auditor"].includes(auth.platform_role));
+  const usage = data.ai_usage || {};
+  const usageCard = $("#aiUsageCard");
+  if (usageCard) usageCard.innerHTML = `<div class="panel-head"><div><p class="eyebrow">AI CONTROL</p><h2>Usage this month</h2></div><button class="button quiet" data-nav="settings">AI settings</button></div><div class="ai-usage-grid"><div><span>API calls</span><strong>${usage.calls || 0}</strong></div><div><span>Total tokens</span><strong>${Number(usage.total_tokens || 0).toLocaleString()}</strong></div><div><span>Estimated cost</span><strong>${Number(usage.estimated_cost_eur || 0) ? `€${Number(usage.estimated_cost_eur).toFixed(4)}` : "Not priced"}</strong></div><div><span>Saved layouts</span><strong>${data.automation?.saved_layouts || 0}</strong></div><div><span>Invoices read locally</span><strong>${data.automation?.local_layout_runs || 0}</strong></div></div><p class="fine-print">Uploading alone spends nothing. Saved supplier layouts process locally without API tokens.</p>`;
   const badge = $("#reviewBadge");
   badge.textContent = data.stats.needs_review;
   badge.classList.toggle("hidden", data.stats.needs_review === 0);
@@ -324,6 +327,17 @@ function renderSettings() {
   renderSchemaIndicators();
 }
 
+async function loadAiSettings() {
+  try {
+    const result = await api("/api/ai/settings");
+    const form = $("#aiSettingsForm"), config = result.config, usage = result.usage;
+    for (const field of ["model", "monthly_budget_eur", "input_eur_per_million", "output_eur_per_million"]) form.elements[field].value = config[field] || "";
+    form.elements.api_key.value = "";
+    $("#aiKeyHint").textContent = config.key_source === "none" ? "Not configured" : `${config.key_source === "app" ? "Saved in app" : "From server environment"} · ends ${config.key_last4}`;
+    $("#aiSettingsUsage").innerHTML = `<span class="info-icon">${result.status.ready ? "✓" : "!"}</span><div><strong>${usage.calls || 0} calls · ${Number(usage.total_tokens || 0).toLocaleString()} tokens in ${escapeHtml(usage.period)}</strong><p>${result.status.ready ? `Ready with ${escapeHtml(config.model)}` : escapeHtml(result.status.last_error || "AI is not configured")}${usage.budget_eur ? ` · Budget €${escapeHtml(usage.budget_eur)}` : ""}</p></div>`;
+  } catch (error) { toast(error.message, "error"); }
+}
+
 function renderDeclarationLanding() {
   if (!$("#declarationPeriod").value) $("#declarationPeriod").value = state.bootstrap?.current_period || "";
   if (state.bootstrap?.profile?.default_flow) $("#declarationFlow").value = state.bootstrap.profile.default_flow;
@@ -475,6 +489,18 @@ document.addEventListener("click", async event => {
     return;
   }
   if (event.target.closest("#changePasswordButton")) { $("#passwordForm").reset(); $("#passwordDialog").showModal(); return; }
+  if (event.target.closest("#testAiButton")) {
+    const button = $("#testAiButton"); button.disabled = true; button.textContent = "Testing…";
+    try { const result = await api("/api/ai/test", { method: "POST" }); toast(result.ready ? `Connected to ${result.model}` : `${result.error_code}: ${result.last_error}`, result.ready ? "" : "error"); await loadAiSettings(); }
+    catch (error) { toast(error.message, "error"); }
+    button.disabled = false; button.textContent = "Test connection"; return;
+  }
+  if (event.target.closest("#removeAiKeyButton")) {
+    if (!confirm("Remove the API key saved inside IntraReady? A server environment key, if present, will become active again.")) return;
+    try { await api("/api/ai/settings/key", { method: "DELETE" }); await loadAiSettings(); await refreshBootstrap(); toast("Saved API key removed"); }
+    catch (error) { toast(error.message, "error"); }
+    return;
+  }
   if (event.target.closest("#refreshAdminButton")) { loadAdmin(); return; }
   if (event.target.closest("[data-add-account]")) { $("#accountForm").reset(); $("#accountDialog").showModal(); return; }
   const activation = event.target.closest("[data-activate-account]");
@@ -717,6 +743,12 @@ $("#passwordForm").addEventListener("submit", async event => {
   const body = Object.fromEntries(new FormData(event.currentTarget));
   if (body.new_password !== body.password_confirm) { toast("The new passwords do not match", "error"); return; }
   try { await api("/api/auth/change-password", { method: "POST", body: JSON.stringify(body) }); $("#passwordDialog").close(); toast("Password changed; other sessions were signed out"); }
+  catch (error) { toast(error.message, "error"); }
+});
+
+$("#aiSettingsForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  try { await api("/api/ai/settings", { method: "PATCH", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); await loadAiSettings(); await refreshBootstrap(); toast("AI settings saved securely"); }
   catch (error) { toast(error.message, "error"); }
 });
 

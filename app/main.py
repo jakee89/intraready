@@ -30,6 +30,7 @@ from .cn_reference import cn_requirement, search_cn
 from .cloud_ai import ai_status, rank_cn_candidates
 from .rules import invoice_issues, readiness
 from .billing import subscription_status
+from .ai_control import get_ai_config, remove_saved_key, save_ai_config, usage_summary
 
 
 TEMPLATE_PATH = BASE_DIR / "app" / "templates" / "index.html"
@@ -69,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.9.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.10.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -81,6 +82,28 @@ def cloud_ai_status():
 @app.post("/api/ai/test")
 def test_cloud_ai():
     return ai_status(True)
+
+
+@app.get("/api/ai/settings")
+def get_cloud_ai_settings():
+    return {"config": get_ai_config(False), "usage": usage_summary(), "status": ai_status(False)}
+
+
+@app.patch("/api/ai/settings")
+def update_cloud_ai_settings(body: dict):
+    try:
+        result = save_ai_config(body)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit("ai.settings_updated", details=f"model={result['model']};key_source={result['key_source']}")
+    return result
+
+
+@app.delete("/api/ai/settings/key")
+def delete_cloud_ai_key():
+    result = remove_saved_key()
+    audit("ai.key_removed")
+    return result
 
 
 @app.middleware("http")
@@ -108,7 +131,7 @@ async def security_middleware(request: Request, call_next):
             role = auth_context.get("organisation_role", "viewer")
             if role == "viewer" and not path.startswith("/api/auth/"):
                 response = JSONResponse({"detail": "Your role is read-only", "code": "PERMISSION_DENIED"}, status_code=403)
-            elif path in {"/api/profile", "/api/schema"} and role not in {"owner", "administrator"}:
+            elif (path in {"/api/profile", "/api/schema"} or path.startswith("/api/ai/settings")) and role not in {"owner", "administrator"}:
                 response = JSONResponse({"detail": "Organisation administrator access required", "code": "PERMISSION_DENIED"}, status_code=403)
             else:
                 supplied = request.headers.get("x-csrf-token", "")
@@ -383,6 +406,7 @@ def admin_activate_account(user_id: int):
             "INSERT INTO organisation_subscriptions(organisation_id,plan_id,status,updated_at) VALUES(?,'internal','inactive',?)",
             (organisation_id, now),
         )
+        connection.execute("INSERT INTO ai_settings(organisation_id,updated_at) VALUES(?,?)", (organisation_id, now))
     audit("admin.account_activated", target_type="user", target_id=str(user_id), details=f"actor={context['user_id']}")
     return {"ok": True, "organisation_id": organisation_id}
 
@@ -605,10 +629,15 @@ def bootstrap():
         "approved": sum(1 for item in invoice_list if item["status"] == "approved"),
         "exported": sum(1 for item in invoice_list if item["status"] in {"exported", "submitted"}),
     }
+    automation = {
+        "saved_layouts": row("SELECT COUNT(*) AS total FROM supplier_profiles WHERE organisation_id=? AND layout_version>0", (_org_id(),))["total"],
+        "local_layout_runs": row("SELECT COUNT(*) AS total FROM extraction_runs WHERE organisation_id=? AND method='saved-layout'", (_org_id(),))["total"],
+        "ai_runs": row("SELECT COUNT(*) AS total FROM ai_usage_events WHERE organisation_id=? AND operation='invoice_layout_learning'", (_org_id(),))["total"],
+    }
     return {
         "app_title": APP_TITLE, "profile": profile, "invoices": invoice_list, "stats": stats,
         "schema": inspect_schema(SCHEMA_PATH), "catalogue_count": row("SELECT COUNT(*) total FROM product_facts WHERE organisation_id=?", (_org_id(),))["total"],
-        "current_period": date.today().strftime("%Y-%m"),
+        "current_period": date.today().strftime("%Y-%m"), "ai_usage": usage_summary(), "automation": automation,
         "auth": {key: current_context().get(key) for key in (
             "user_id", "email", "name", "platform_role", "organisation_id", "organisation_name", "organisation_role", "csrf_token"
         )},

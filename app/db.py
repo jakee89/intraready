@@ -119,6 +119,34 @@ CREATE TABLE IF NOT EXISTS billing_events (
     processed_at TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS ai_settings (
+    organisation_id INTEGER PRIMARY KEY REFERENCES organisations(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL DEFAULT 'OpenAI',
+    model TEXT NOT NULL DEFAULT 'gpt-5.6-terra',
+    api_key_cipher TEXT NOT NULL DEFAULT '',
+    api_key_last4 TEXT NOT NULL DEFAULT '',
+    monthly_budget_eur TEXT NOT NULL DEFAULT '',
+    input_eur_per_million TEXT NOT NULL DEFAULT '',
+    output_eur_per_million TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_usage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organisation_id INTEGER NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    operation TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    request_id TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_eur TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'completed',
+    error_code TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS profiles (
     organisation_id INTEGER PRIMARY KEY REFERENCES organisations(id),
     trader_vat TEXT NOT NULL DEFAULT '',
@@ -303,6 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_supplier_templates ON supplier_template_versions(
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON user_sessions(token_hash, expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(email_normalized, created_at);
 CREATE INDEX IF NOT EXISTS idx_security_events ON security_events(created_at, action);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_period ON ai_usage_events(organisation_id, created_at);
 """
 
 
@@ -379,6 +408,8 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO organisation_subscriptions(organisation_id,plan_id,status,updated_at) VALUES(1,'internal','inactive',?)",
             (now,),
         )
+        connection.execute("INSERT OR IGNORE INTO ai_settings(organisation_id,updated_at) VALUES(1,?)", (now,))
+        connection.execute("INSERT OR IGNORE INTO ai_settings(organisation_id,updated_at) SELECT id,? FROM organisations", (now,))
 
 
 def rows(query: str, params: tuple = ()) -> list[dict]:
