@@ -199,6 +199,8 @@ CREATE TABLE IF NOT EXISTS invoices (
     status TEXT NOT NULL DEFAULT 'needs_review',
     notes TEXT NOT NULL DEFAULT '',
     revision INTEGER NOT NULL DEFAULT 1,
+    parent_invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
+    correction_number INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -387,6 +389,12 @@ def init_db() -> None:
         if "consignment_country" not in existing_line_columns:
             connection.execute("ALTER TABLE invoice_lines ADD COLUMN consignment_country TEXT NOT NULL DEFAULT ''")
             connection.execute("UPDATE invoice_lines SET consignment_country=COALESCE((SELECT consignment_country FROM invoices WHERE invoices.id=invoice_lines.invoice_id),'')")
+        invoice_columns = {item[1] for item in connection.execute("PRAGMA table_info(invoices)")}
+        if "parent_invoice_id" not in invoice_columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN parent_invoice_id INTEGER")
+        if "correction_number" not in invoice_columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN correction_number INTEGER NOT NULL DEFAULT 0")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_invoice_parent ON invoices(organisation_id,parent_invoice_id)")
         supplier_columns = {item[1] for item in connection.execute("PRAGMA table_info(supplier_profiles)")}
         if "layout_mapping" not in supplier_columns:
             connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_mapping TEXT NOT NULL DEFAULT ''")

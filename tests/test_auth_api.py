@@ -73,6 +73,33 @@ class AuthenticationApiTests(unittest.TestCase):
         self.assertEqual(signed_in.status_code, 200, signed_in.text)
         self.assertEqual(self.client.get("/", follow_redirects=False).headers["location"], "/login")
 
+    def test_exported_invoice_is_locked_and_correction_copies_rows(self):
+        created = self.client.post(
+            "/api/auth/setup-owner",
+            json={"name": "Owner", "email": "owner@example.com", "organisation": "Existing Co", "setup_code": "one-time-server-setup-code", "password": "correct horse battery staple"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        csrf = self.client.get("/api/bootstrap").json()["auth"]["csrf_token"]
+        headers = {"X-CSRF-Token": csrf}
+        invoice = self.client.post("/api/invoices", headers=headers).json()
+        now = db.utc_now()
+        with db.transaction() as connection:
+            connection.execute("UPDATE invoices SET invoice_number='INV-LOCKED',status='exported' WHERE id=?", (invoice["id"],))
+            connection.execute(
+                "INSERT INTO invoice_lines(invoice_id,position,sku,description,quantity,reviewed,created_at,updated_at) VALUES(?,1,'SKU-1','Product','3',1,?,?)",
+                (invoice["id"], now, now),
+            )
+        locked = self.client.patch(f"/api/invoices/{invoice['id']}", headers=headers, json={"supplier_name": "Changed"})
+        self.assertEqual(locked.status_code, 409)
+        response = self.client.post(f"/api/invoices/{invoice['id']}/correction", headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        correction = response.json()
+        self.assertEqual(correction["parent_invoice_id"], invoice["id"])
+        self.assertEqual(correction["correction_number"], 1)
+        self.assertEqual(correction["status"], "needs_review")
+        self.assertEqual(correction["lines"][0]["sku"], "SKU-1")
+        self.assertEqual(correction["lines"][0]["reviewed"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -215,9 +215,9 @@ function renderInvoiceTable() {
   const filter = $("#invoiceFilter")?.value || "all";
   const invoices = state.bootstrap.invoices.filter(item => filter === "all" || item.status === filter || (filter === "needs_review" && item.status === "draft"));
   target.innerHTML = `<div class="data-table-wrap"><table class="data-table"><thead><tr><th><input type="checkbox" id="selectAllInvoices" aria-label="Select all visible invoices"></th><th>Supplier / reference</th><th>Movement date</th><th>Goods rows</th><th>Total</th><th>Issues</th><th>Status</th><th>Actions</th></tr></thead><tbody>${invoices.length ? invoices.map(invoice => `
-    <tr data-open-invoice="${invoice.id}" tabindex="0"><td><input type="checkbox" data-select-invoice="${invoice.id}" ${state.selectedInvoices.has(invoice.id) ? "checked" : ""} ${!invoice.document_id || invoice.status === "submitted" ? "disabled" : ""} aria-label="Select invoice"></td><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}</span></td>
+    <tr data-open-invoice="${invoice.id}" tabindex="0"><td><input type="checkbox" data-select-invoice="${invoice.id}" ${state.selectedInvoices.has(invoice.id) ? "checked" : ""} ${!invoice.document_id || ["exported", "submitted"].includes(invoice.status) ? "disabled" : ""} aria-label="Select invoice"></td><td><strong>${escapeHtml(invoice.s_name || invoice.supplier_name || "Supplier not identified")}</strong><span class="subline">${escapeHtml(invoice.invoice_number || invoice.filename || "Manual draft")}${invoice.correction_number ? ` · Correction ${invoice.correction_number}` : ""}</span></td>
     <td>${escapeHtml(formatDate(invoice.arrival_date))}</td><td>${invoice.goods_count}</td><td class="amount">${formatMoney(invoice.total_value, invoice.currency)}</td>
-    <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td><td>${invoice.status === "submitted" ? "—" : `<button class="mini-button delete" data-delete-invoice="${invoice.id}" aria-label="Delete invoice ${escapeHtml(invoice.invoice_number || "draft")}">Delete</button>`}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="8">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
+    <td>${invoice.blocking_count ? `<span class="status needs_review">${invoice.blocking_count} open</span>` : "—"}</td><td>${statusChip(invoice.status)}</td><td>${["exported", "submitted"].includes(invoice.status) ? "Locked" : `<button class="mini-button delete" data-delete-invoice="${invoice.id}" aria-label="Delete invoice ${escapeHtml(invoice.invoice_number || "draft")}">Delete</button>`}</td></tr>`).join("") : `<tr><td class="empty-row" colspan="8">No invoices match this filter.</td></tr>`}</tbody></table></div>`;
   updateBatchAiButton();
 }
 
@@ -289,17 +289,22 @@ function invoiceInput(field, label, tip, invoice) {
 function renderReview() {
   const invoice = state.currentInvoice;
   if (!invoice) return;
+  const locked = ["exported", "submitted"].includes(invoice.status);
   const currentLineIds = new Set(invoice.lines.map(line => line.id));
   for (const id of state.pendingReviews.keys()) if (!currentLineIds.has(id)) state.pendingReviews.delete(id);
   const issues = invoice.readiness.issues;
   const issueLines = new Set(issues.filter(item => item.line_id).map(item => item.line_id));
   const document = invoice.document;
+  const actionButtons = locked
+    ? `<button id="createCorrectionButton" class="button primary">Create correction draft</button>`
+    : `${document ? `<button id="aiStatusButton" class="button quiet" title="Check the configured cloud invoice AI connection without processing this invoice">Check API AI</button><button id="rereadLocalButton" class="button quiet" title="Rebuild all rows with the adaptive supplier reader; no API credits are used">Re-read locally</button><button id="extractAgainButton" class="button quiet" title="Ask AI to complete supported invoice fields and rows; missing information stays blank">AI complete form</button><button id="mapSupplierButton" class="button quiet" title="View, edit or restore this supplier's saved layouts">Supplier layout</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify obvious printing, freight and other extracted charges">Prepare invoice</button><button id="allocateChargesButton" class="button secondary" title="Preview and split freight, printing or handling charges across goods">Allocate charges</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}`;
   $("#reviewContent").innerHTML = `
-    <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
-    <div class="review-actions">${document && invoice.status !== "submitted" ? `<button id="aiStatusButton" class="button quiet" title="Check the configured cloud invoice AI connection without processing this invoice">Check API AI</button><button id="rereadLocalButton" class="button quiet" title="Rebuild all rows with the adaptive supplier reader; no API credits are used">Re-read locally</button><button id="extractAgainButton" class="button quiet" title="Ask AI to complete supported invoice fields and rows; missing information stays blank">AI complete form</button><button id="mapSupplierButton" class="button quiet" title="View, edit or restore this supplier's saved layouts">Supplier layout</button>` : ""}<button id="prepareInvoiceButton" class="button secondary" title="Classify obvious printing, freight and other extracted charges">Prepare invoice</button><button id="allocateChargesButton" class="button secondary" title="Preview and split freight, printing or handling charges across goods">Allocate charges</button><button id="rememberSupplierButton" class="button quiet" title="Reuse this supplier's shipment defaults on future invoices">Remember supplier</button><button id="addLineButton" class="button quiet">Add row</button>${invoice.status === "approved" ? `<button id="reopenButton" class="button secondary">Reopen review</button>` : `<button id="approveButton" class="button primary" ${invoice.readiness.ready ? "" : "disabled"}>Approve invoice</button>`}</div></div>
+    <div class="review-toolbar"><div><button class="text-button back" data-nav="invoices">← Back to invoices</button><h2>${escapeHtml(invoice.supplier_name || "Supplier not identified")}</h2><p>${escapeHtml(invoice.invoice_number || "New manual draft")}${invoice.correction_number ? ` · Correction ${invoice.correction_number}` : ""} · Revision ${invoice.revision} · ${statusChip(invoice.status)}</p></div>
+    <div class="review-actions">${actionButtons}</div></div>
     <div class="review-layout">
       <article class="panel document-panel">${document ? `<div class="document-head"><strong title="${escapeHtml(document.filename)}">${escapeHtml(document.filename)}</strong><a class="text-button" href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Open ↗</a></div><iframe class="pdf-frame" title="Invoice PDF" src="/api/documents/${document.id}/file#toolbar=1"></iframe>` : `<div class="no-document"><div><span class="file-icon">—</span><h3>Manual invoice</h3><p>No PDF is attached to this draft.</p></div></div>`}</article>
       <div class="review-workspace">
+        ${locked || invoice.source_invoice ? `<article class="info-card slim revision-banner"><span class="info-icon">${locked ? "🔒" : "↺"}</span><div><strong>${locked ? "Locked declaration record" : `Correction draft ${invoice.correction_number}`}</strong><p>${locked ? "This invoice was included in an export and is read-only. Create a correction draft to change it without altering the saved declaration." : `Based on ${escapeHtml(invoice.source_invoice?.invoice_number || "the original exported invoice")}. Review every copied row before approval.`}</p>${invoice.corrections?.length ? `<p>${invoice.corrections.length} correction draft${invoice.corrections.length === 1 ? "" : "s"} recorded.</p>` : ""}</div></article>` : ""}
         <article class="panel review-section"><div class="section-title"><div><h3>Invoice and shipment</h3><p>Fields save when you leave them.</p></div></div><div class="form-grid">${invoiceFields.map(fields => invoiceInput(...fields, invoice)).join("")}</div>
           <label class="wide notes-label">Notes<textarea data-invoice-field="notes" rows="2">${escapeHtml(invoice.notes)}</textarea></label>
         </article>
@@ -317,6 +322,7 @@ function renderReview() {
           </tbody></table></div>
         </article>
     </div>`;
+  if (locked) $$("[data-invoice-field], [data-line-field], [data-review-line]", $("#reviewContent")).forEach(control => { control.disabled = true; });
 }
 
 function lineRow(line, allLines, issueLines) {
@@ -728,6 +734,16 @@ document.addEventListener("click", async event => {
   if (event.target.closest("#prepareInvoiceButton")) {
     try { state.currentInvoice = await api(`/api/invoices/${state.currentInvoice.id}/prepare`, { method: "POST" }); await refreshBootstrap(); renderReview(); toast("Invoice prepared — review the proposed Intrastat rows"); }
     catch (error) { toast(error.message, "error"); }
+    return;
+  }
+  if (event.target.closest("#createCorrectionButton")) {
+    if (!confirm("Create an editable correction from this locked invoice? The original export and receipt will remain unchanged.")) return;
+    const button = event.target.closest("#createCorrectionButton");
+    button.disabled = true; button.textContent = "Creating…";
+    try {
+      const correction = await api(`/api/invoices/${state.currentInvoice.id}/correction`, { method: "POST" });
+      await refreshBootstrap(); await openInvoice(correction.id); toast("Correction draft created — review every copied row");
+    } catch (error) { button.disabled = false; button.textContent = "Create correction draft"; toast(error.message, "error"); }
     return;
   }
   if (event.target.closest("#allocateChargesButton")) { openChargeAllocation(); return; }

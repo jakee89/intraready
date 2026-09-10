@@ -70,7 +70,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.16.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.17.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -466,6 +466,14 @@ def _payload(invoice_id: int) -> dict:
     result["readiness"] = readiness(invoice, lines_list, _profile())
     result["preparation"] = _preparation_summary(lines_list)
     result["extraction_runs"] = rows("SELECT method,status,message,duration_ms,created_at FROM extraction_runs WHERE invoice_id=? ORDER BY id DESC LIMIT 5", (invoice_id,))
+    result["corrections"] = rows(
+        "SELECT id,invoice_number,status,correction_number,created_at FROM invoices WHERE organisation_id=? AND parent_invoice_id=? ORDER BY correction_number DESC",
+        (_org_id(), invoice_id),
+    )
+    result["source_invoice"] = row(
+        "SELECT id,invoice_number,status FROM invoices WHERE id=? AND organisation_id=?",
+        (invoice.get("parent_invoice_id"), _org_id()),
+    ) if invoice.get("parent_invoice_id") else None
     return result
 
 
@@ -584,6 +592,9 @@ def _record_event(connection, invoice_id: int | None, event_type: str, details: 
 
 
 def _invalidate(connection, invoice_id: int, event_type: str, details: dict):
+    current = connection.execute("SELECT status FROM invoices WHERE id=? AND organisation_id=?", (invoice_id, _org_id())).fetchone()
+    if current and current[0] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     connection.execute(
         "UPDATE invoices SET status = 'needs_review', revision = revision + 1, updated_at = ? WHERE id = ? AND organisation_id = ?",
         (utc_now(), invoice_id, _org_id()),
@@ -1019,8 +1030,8 @@ def activate_supplier_template(invoice_id: int, template_id: int):
 def extract_again(invoice_id: int, use_ai: bool = False, replace_reviewed: bool = False):
     started = time.monotonic()
     invoice = _invoice(invoice_id)
-    if invoice["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked.")
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     document = row("SELECT * FROM documents WHERE id=? AND organisation_id=?", (invoice.get("document_id"), _org_id()))
     if not document:
         raise HTTPException(422, "This manual invoice has no PDF to extract.")
@@ -1100,6 +1111,54 @@ def create_manual_invoice():
     return _payload(invoice_id)
 
 
+@app.post("/api/invoices/{invoice_id}/correction")
+def create_correction(invoice_id: int):
+    source = _invoice(invoice_id)
+    if source["status"] not in {"exported", "submitted"}:
+        raise HTTPException(422, "Corrections are created from exported or submitted invoices.")
+    root_invoice_id = source.get("parent_invoice_id") or invoice_id
+    existing = row(
+        "SELECT id FROM invoices WHERE organisation_id=? AND parent_invoice_id=? AND status IN ('draft','needs_review','approved') ORDER BY correction_number DESC LIMIT 1",
+        (_org_id(), root_invoice_id),
+    )
+    if existing:
+        return _payload(existing["id"])
+    source_lines = _lines(invoice_id)
+    number = (row("SELECT COALESCE(MAX(correction_number),0)+1 AS number FROM invoices WHERE organisation_id=? AND parent_invoice_id=?", (_org_id(), root_invoice_id)) or {"number": 1})["number"]
+    now = utc_now()
+    invoice_columns = ["document_id", *sorted(INVOICE_FIELDS)]
+    invoice_values = {column: source.get(column, "") for column in invoice_columns}
+    invoice_values["notes"] = (source.get("notes", "") + f" Correction draft {number} for locked invoice {source['invoice_number']}.").strip()
+    with transaction() as connection:
+        columns = [*invoice_columns, "status", "revision", "parent_invoice_id", "correction_number", "created_at", "updated_at"]
+        values = [*(invoice_values[column] for column in invoice_columns), "needs_review", 1, root_invoice_id, number, now, now]
+        correction_id = connection.execute(
+            f"INSERT INTO invoices(organisation_id,{','.join(columns)}) VALUES(?,{','.join('?' for _ in columns)})",
+            (_org_id(), *values),
+        ).lastrowid
+        line_map: dict[int, int] = {}
+        line_columns = sorted(LINE_FIELDS - {"linked_line_id", "reviewed"})
+        for source_line in source_lines:
+            values = [source_line.get(column, "") for column in line_columns]
+            new_id = connection.execute(
+                f"INSERT INTO invoice_lines(invoice_id,position,{','.join(line_columns)},linked_line_id,reviewed,created_at,updated_at) VALUES(?,?,{','.join('?' for _ in line_columns)},NULL,0,?,?)",
+                (correction_id, source_line["position"], *values, now, now),
+            ).lastrowid
+            line_map[source_line["id"]] = new_id
+        for source_line in source_lines:
+            if source_line.get("linked_line_id") in line_map:
+                connection.execute("UPDATE invoice_lines SET linked_line_id=? WHERE id=?", (line_map[source_line["linked_line_id"]], line_map[source_line["id"]]))
+            for allocation in source_line.get("allocations", []):
+                if allocation.get("goods_line_id") in line_map:
+                    connection.execute(
+                        "INSERT INTO charge_allocations(invoice_id,charge_line_id,goods_line_id,amount,created_at) VALUES(?,?,?,?,?)",
+                        (correction_id, line_map[source_line["id"]], line_map[allocation["goods_line_id"]], allocation["amount"], now),
+                    )
+        _record_event(connection, root_invoice_id, "correction_created", {"correction_invoice_id": correction_id, "correction_number": number})
+        _record_event(connection, correction_id, "correction_draft_created", {"source_invoice_id": root_invoice_id, "correction_number": number})
+    return _payload(correction_id)
+
+
 @app.get("/api/invoices/{invoice_id}")
 def get_invoice(invoice_id: int):
     return _payload(invoice_id)
@@ -1108,8 +1167,8 @@ def get_invoice(invoice_id: int):
 @app.patch("/api/invoices/{invoice_id}")
 async def update_invoice(invoice_id: int, request: Request):
     current = _invoice(invoice_id)
-    if current["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft so the original record remains intact.")
+    if current["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     body = await request.json()
     expected_revision = body.pop("revision", None)
     if expected_revision is not None and int(expected_revision) != current["revision"]:
@@ -1130,8 +1189,8 @@ async def update_invoice(invoice_id: int, request: Request):
 @app.post("/api/invoices/{invoice_id}/lines")
 async def create_line(invoice_id: int, request: Request):
     current = _invoice(invoice_id)
-    if current["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
+    if current["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     body = await request.json()
     values = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
     if values.get("line_kind", "goods") == "goods" and not values.get("consignment_country"):
@@ -1167,8 +1226,8 @@ async def update_line(line_id: int, request: Request):
     found = row("SELECT l.*,i.organisation_id FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?", (line_id,))
     if not found or found["organisation_id"] != _org_id():
         raise HTTPException(404, "Line not found")
-    if _invoice(found["invoice_id"])["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
+    if _invoice(found["invoice_id"])["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     body = await request.json()
     updates = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
     if "hs_code" in updates:
@@ -1217,8 +1276,8 @@ async def update_line(line_id: int, request: Request):
 @app.patch("/api/invoices/{invoice_id}/review-lines")
 async def review_lines(invoice_id: int, request: Request):
     invoice = _invoice(invoice_id)
-    if invoice["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked.")
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     changes = (await request.json()).get("reviewed", [])
     with transaction() as connection:
         valid_ids = {item[0] for item in connection.execute("SELECT id FROM invoice_lines WHERE invoice_id=?", (invoice_id,))}
@@ -1276,8 +1335,8 @@ def delete_line(line_id: int):
     found = row("SELECT l.invoice_id,i.organisation_id FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.id=?", (line_id,))
     if not found or found["organisation_id"] != _org_id():
         raise HTTPException(404, "Line not found")
-    if _invoice(found["invoice_id"])["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
+    if _invoice(found["invoice_id"])["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     with transaction() as connection:
         connection.execute("DELETE FROM invoice_lines WHERE id=?", (line_id,))
         # Keep simple stable display positions after deletion.
@@ -1290,12 +1349,12 @@ def delete_line(line_id: int):
 @app.delete("/api/invoices/{invoice_id}")
 def delete_invoice(invoice_id: int):
     invoice = _invoice(invoice_id)
-    if invoice["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked and cannot be deleted.")
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "Exported invoices are locked and cannot be deleted.")
     document = row("SELECT storage_name FROM documents WHERE id=?", (invoice.get("document_id"),)) if invoice.get("document_id") else None
     with transaction() as connection:
         connection.execute("DELETE FROM invoices WHERE id=? AND organisation_id=?", (invoice_id, _org_id()))
-        if invoice.get("document_id"):
+        if invoice.get("document_id") and not connection.execute("SELECT 1 FROM invoices WHERE document_id=? LIMIT 1", (invoice["document_id"],)).fetchone():
             connection.execute("DELETE FROM documents WHERE id=? AND organisation_id=?", (invoice["document_id"], _org_id()))
         _record_event(connection, None, "invoice_deleted", {"invoice_number": invoice["invoice_number"]})
     if document:
@@ -1306,8 +1365,8 @@ def delete_invoice(invoice_id: int):
 @app.post("/api/invoices/{invoice_id}/combine-equivalent")
 def combine_equivalent_lines(invoice_id: int):
     invoice = _invoice(invoice_id)
-    if invoice["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked.")
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     invoice_lines = _lines(invoice_id)
     groups: dict[tuple, list[dict]] = {}
     for line in invoice_lines:
@@ -1365,8 +1424,8 @@ def combine_equivalent_lines(invoice_id: int):
 @app.post("/api/invoices/{invoice_id}/prepare")
 def prepare_invoice(invoice_id: int):
     invoice = _invoice(invoice_id)
-    if invoice["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked.")
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     invoice_lines = _lines(invoice_id)
     goods = [line for line in invoice_lines if line["line_kind"] == "goods" and line.get("hs_code")]
     if not goods:
@@ -1410,8 +1469,8 @@ def preview_charge_allocation(invoice_id: int, payload: dict):
 @app.post("/api/invoices/{invoice_id}/charge-allocation/apply")
 def apply_charge_allocation(invoice_id: int, payload: dict):
     invoice = _invoice(invoice_id)
-    if invoice["status"] == "submitted":
-        raise HTTPException(409, "Submitted invoices are locked.")
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     preview = _allocation_preview(invoice_id, payload)
     charge_id = preview["charge"]["id"]
     with transaction() as connection:
@@ -1436,6 +1495,8 @@ def apply_charge_allocation(invoice_id: int, payload: dict):
 @app.post("/api/invoices/{invoice_id}/approve")
 def approve_invoice(invoice_id: int):
     invoice = _invoice(invoice_id)
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     check = readiness(invoice, _lines(invoice_id), _profile())
     if not check["ready"]:
         raise HTTPException(422, {"message": "Resolve blocking issues before approval.", "issues": check["issues"]})
@@ -1457,7 +1518,9 @@ def remember_supplier(invoice_id: int):
 
 @app.post("/api/invoices/{invoice_id}/reopen")
 def reopen_invoice(invoice_id: int):
-    _invoice(invoice_id)
+    invoice = _invoice(invoice_id)
+    if invoice["status"] in {"exported", "submitted"}:
+        raise HTTPException(409, "This invoice is locked because it was exported. Create a correction draft to make changes.")
     with transaction() as connection:
         connection.execute("UPDATE invoices SET status='needs_review',updated_at=? WHERE id=?", (utc_now(), invoice_id))
         _record_event(connection, invoice_id, "invoice_reopened", {})
@@ -1544,7 +1607,7 @@ async def update_profile(request: Request):
         assignments = ", ".join(f"{field}=?" for field in updates)
         connection.execute(f"UPDATE profiles SET {assignments},updated_at=? WHERE organisation_id=?", (*updates.values(), utc_now(), _org_id()))
         connection.execute(
-            "UPDATE invoices SET status='needs_review',updated_at=? WHERE organisation_id=? AND status IN ('approved','exported')",
+            "UPDATE invoices SET status='needs_review',updated_at=? WHERE organisation_id=? AND status='approved'",
             (utc_now(), _org_id()),
         )
         _record_event(connection, None, "profile_updated", {"fields": list(updates)})
@@ -1573,7 +1636,11 @@ def _approved_for_period(period: str, flow: str) -> tuple[list[dict], dict[int, 
         raise HTTPException(422, "Period must be YYYY-MM")
     if flow not in {"A", "D"}:
         raise HTTPException(422, "Flow must be A for arrivals or D for dispatches")
-    invoices = rows("SELECT * FROM invoices WHERE organisation_id=? AND arrival_date LIKE ? AND flow=? AND status IN ('approved','exported') ORDER BY id", (_org_id(), period + "%", flow))
+    invoices = rows("""SELECT * FROM invoices i WHERE i.organisation_id=? AND i.arrival_date LIKE ? AND i.flow=?
+                      AND i.status IN ('approved','exported')
+                      AND NOT EXISTS (SELECT 1 FROM invoices correction WHERE correction.parent_invoice_id=i.id
+                                      AND correction.status IN ('approved','exported','submitted')) ORDER BY id""",
+                    (_org_id(), period + "%", flow))
     lines_by_invoice = {invoice["id"]: _lines(invoice["id"]) for invoice in invoices}
     profile = _profile()
     return invoices, lines_by_invoice, profile
@@ -1639,7 +1706,13 @@ def declaration_preview(period: str, flow: str = "A"):
     for invoice in all_period_invoices:
         if invoice["id"] in included_ids:
             continue
-        if invoice["status"] == "submitted":
+        replacement = row(
+            "SELECT id,correction_number FROM invoices WHERE organisation_id=? AND parent_invoice_id=? AND status IN ('approved','exported','submitted') ORDER BY correction_number DESC LIMIT 1",
+            (_org_id(), invoice["id"]),
+        )
+        if replacement:
+            reasons = [f"Replaced by approved correction {replacement['correction_number']}."]
+        elif invoice["status"] == "submitted":
             reasons = ["Already submitted and kept out of a new export."]
         else:
             invoice_readiness = readiness(invoice, _lines(invoice["id"]), profile)
@@ -1655,7 +1728,10 @@ def declaration_preview(period: str, flow: str = "A"):
 
     previous = _previous_period(period)
     previous_invoices = rows(
-        "SELECT * FROM invoices WHERE organisation_id=? AND arrival_date LIKE ? AND flow=? AND status IN ('approved','exported','submitted') ORDER BY id",
+        """SELECT * FROM invoices i WHERE i.organisation_id=? AND i.arrival_date LIKE ? AND i.flow=?
+           AND i.status IN ('approved','exported','submitted')
+           AND NOT EXISTS (SELECT 1 FROM invoices correction WHERE correction.parent_invoice_id=i.id
+                           AND correction.status IN ('approved','exported','submitted')) ORDER BY id""",
         (_org_id(), previous + "%", flow),
     )
     previous_lines = {invoice["id"]: _lines(invoice["id"]) for invoice in previous_invoices}

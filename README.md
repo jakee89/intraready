@@ -27,12 +27,13 @@ The app intentionally stops before government submission. It prepares and valida
 - Charge decisions: add to invoice value, statistical value only, or exclude
 - Charge allocation preview with value, weight, quantity, equal or single-product splitting
 - Exact reconciliation of goods/charges against the invoice total
-- Approval invalidation after edits or organisation-profile changes
+- Approval invalidation after edits or organisation-profile changes, while exported declaration records stay locked
 - Effective product memory keyed by supplier VAT and SKU
 - Remembered unit net weight with automatic total-row weight calculation
 - Safe combination of equivalent colour or description variants
 - Arrival and dispatch flows with period preview based on the actual movement date
 - Monthly declaration workspace with included/excluded invoices, blocking reasons, grouped totals, previous-month comparison and export attempts
+- Exported invoice locks with editable correction drafts that preserve the original declaration record
 - Supplementary quantity and special commodity fields where the Malta format requires them
 - Inline supplementary-quantity input with the exact CN-required unit, plus conditional special quantity, range and collector fields
 - Export history with a place to record the NSO portal receipt reference
