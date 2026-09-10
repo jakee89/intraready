@@ -128,6 +128,7 @@ def _apply_ai_draft(draft: dict, extracted: dict) -> dict:
             "quantity": quantity, "unit": str(item.get("unit", "")).strip().upper(),
             "raw_commodity_code": raw_code, "hs_code": raw_code[:8],
             "origin_country": str(item.get("origin_country", "")).strip().upper(),
+            "consignment_country": str(item.get("consignment_country", "")).strip().upper() or draft.get("consignment_country", ""),
             "invoice_value": invoice_value,
             "statistical_value": statistical_value or (invoice_value if kind == "goods" else ""),
             "unit_net_mass": unit_mass, "net_mass": total_mass,
@@ -315,6 +316,7 @@ def _parse_saved_mapping(path: Path, draft: dict, profile: dict) -> dict:
         parsed.append({
             "sku": values.get("sku", ""), "description": description, "quantity": quantity, "unit": values.get("unit", "").upper(),
             "raw_commodity_code": raw_code, "hs_code": raw_code[:8], "origin_country": values.get("origin_country", "").upper(),
+            "consignment_country": values.get("consignment_country", "").upper() or draft.get("consignment_country", ""),
             "invoice_value": amount, "statistical_value": amount, "unit_net_mass": unit_mass, "net_mass": total_mass,
             "net_mass_overridden": 0, "supp_qty": "", "supp_unit": "", "line_kind": kind, "reviewed": False,
             "source_page": anchor.get("page", 1), "confidence": "manual-map", "notes": "Extracted with the saved supplier map; verify this row.",

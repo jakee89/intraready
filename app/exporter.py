@@ -79,7 +79,7 @@ def declaration_rows(invoices: list[dict], lines_by_invoice: dict[int, list[dict
                 "Decleration_Date": date.today().isoformat(), "Locality": profile["locality"].upper(),
                 "FLOW": invoice["flow"], "VAT_CTRY_ID": invoice["supplier_vat_country"].upper(),
                 "Suppliers_VAT_No": invoice["supplier_vat_number"], "HS_Code": line["hs_code"],
-                "COO": line["origin_country"].upper(), "COC": invoice["consignment_country"].upper(),
+                "COO": line["origin_country"].upper(), "COC": (line.get("consignment_country") or invoice.get("consignment_country", "")).upper(),
                 "MOT": invoice["mode_transport"], "TOD": invoice["terms_delivery"].upper(),
                 "INV_CURR": invoice["currency"].upper(), "NOT": invoice["nature_transaction"],
                 "INVOICE_VALUE": str(rounded_whole(Decimal(str(line["invoice_value"] or "0")) + allocated["invoice"])),

@@ -12,16 +12,16 @@ from .config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
 
 FIELDS = ["invoice_number", "invoice_date", "total_value", "supplier_name", "supplier_vat_number", "currency",
           "terms_delivery", "line_sku", "line_description", "line_quantity", "line_unit", "line_hs_code",
-          "line_origin_country", "line_invoice_value", "line_unit_net_mass"]
+          "line_origin_country", "line_consignment_country", "line_invoice_value", "line_unit_net_mass"]
 
 LINE_SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
     "sku": {"type": "string"}, "product_code": {"type": "string"}, "barcode": {"type": "string"}, "description": {"type": "string"},
     "quantity": {"type": "string"}, "unit": {"type": "string"}, "commodity_code": {"type": "string"},
-    "origin_country": {"type": "string"}, "invoice_value": {"type": "string"},
+    "origin_country": {"type": "string"}, "consignment_country": {"type": "string"}, "invoice_value": {"type": "string"},
     "statistical_value": {"type": "string"}, "unit_net_mass": {"type": "string"}, "net_mass": {"type": "string"},
     "line_kind": {"type": "string", "enum": ["goods", "charge", "freight", "insurance", "discount", "tax", "service"]},
     "source_page": {"type": "integer"}},
-    "required": ["sku", "product_code", "barcode", "description", "quantity", "unit", "commodity_code", "origin_country",
+    "required": ["sku", "product_code", "barcode", "description", "quantity", "unit", "commodity_code", "origin_country", "consignment_country",
                  "invoice_value", "statistical_value", "unit_net_mass", "net_mass", "line_kind", "source_page"]}
 
 REGION_SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
@@ -104,6 +104,7 @@ Read every page and preserve every source row. Distinguish supplier SKU/item ref
 If an invoice has both “Item Ref.” and “Product Code”, SKU must be the value under “Item Ref.”. Put the other value in product_code. Never map Product Code as line_sku when Item Ref. exists.
 Classify goods; printing/engraving/logo/setup/handling/packaging charges; freight/transport/shipping; insurance; discounts; VAT/tax; and services.
 Freight must always be a separate freight row even when outside the goods table. Invoice value is the extended line total.
+Country of consignment belongs to each goods row/order. Extract it per line when different orders ship from different EU countries; use the invoice-level value only as a default.
 Convert unit grams to kg. Never invent missing values. Use empty strings when unsupported.
 Also return reusable normalized page regions (0 to 1 from page top-left) for visible fixed values and full repeating data columns.
 Exclude headings and totals from repeating column regions. Include only regions you can locate reliably."""

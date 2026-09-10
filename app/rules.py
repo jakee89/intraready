@@ -39,7 +39,7 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
         ("supplier_name", "Supplier name"), ("supplier_vat_country", "Supplier VAT country"),
         ("supplier_vat_number", "Supplier VAT number"), ("invoice_number", "Invoice number"),
         ("invoice_date", "Invoice date"), ("arrival_date", "Actual arrival date" if invoice.get("flow", "A") == "A" else "Actual dispatch date"),
-        ("currency", "Invoice currency"), ("consignment_country", "Country of consignment"),
+        ("currency", "Invoice currency"),
         ("mode_transport", "Mode of transport"), ("terms_delivery", "Terms of delivery"),
         ("nature_transaction", "Nature of transaction"),
     ]:
@@ -48,9 +48,6 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
     vat_country = str(invoice.get("supplier_vat_country", "")).upper()
     if vat_country and vat_country not in EU_COUNTRIES:
         add("vat_country_not_eu", "Supplier VAT country must be an EU member code (Greece uses EL; Northern Ireland uses XI).", "supplier_vat_country")
-    coc = str(invoice.get("consignment_country", "")).upper()
-    if coc and coc not in EU_COUNTRIES:
-        add("consignment_not_eu", "Country of consignment must be an EU member code for Intrastat.", "consignment_country")
     if invoice.get("supplier_vat_number") and not re.fullmatch(r"[A-Z0-9]{4,14}", str(invoice["supplier_vat_number"]).upper()):
         add("supplier_vat_format", "Check the supplier VAT number; enter it without the country prefix.", "supplier_vat_number")
     if invoice.get("flow") not in {"A", "D"}:
@@ -100,6 +97,11 @@ def invoice_issues(invoice: dict, lines: list[dict], profile: dict | None = None
                         add("wrong_supp_unit", f"Supplementary unit must be {requirement['supp_unit']} for this CN code.", "supp_unit", line.get("id"))
             if line.get("origin_country") and not re.fullmatch(r"[A-Z]{2}", str(line["origin_country"]).upper()):
                 add("invalid_origin", "Country of origin must be a 2-letter code.", "origin_country", line.get("id"))
+            coc = str(line.get("consignment_country") or invoice.get("consignment_country", "")).upper()
+            if not coc:
+                add("missing_line_field", "Country of consignment is missing on this goods row.", "consignment_country", line.get("id"))
+            if coc and coc not in EU_COUNTRIES:
+                add("consignment_not_eu", "Country of consignment on this row must be an EU member code.", "consignment_country", line.get("id"))
             inv_value = decimal_or_none(line.get("invoice_value"))
             stat_value = decimal_or_none(line.get("statistical_value"))
             mass = decimal_or_none(line.get("net_mass"))

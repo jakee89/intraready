@@ -56,6 +56,11 @@ class RuleTests(unittest.TestCase):
         invoice["consignment_country"] = "US"
         self.assertIn("consignment_not_eu", {i["code"] for i in invoice_issues(invoice, [goods()], complete_profile())})
 
+    def test_row_consignment_overrides_invoice_default(self):
+        line = goods()
+        line["consignment_country"] = "US"
+        self.assertIn("consignment_not_eu", {i["code"] for i in invoice_issues(complete_invoice(), [line], complete_profile())})
+
     def test_rounding_is_half_up_and_mass_minimum_is_export_concern(self):
         self.assertEqual(rounded_whole("12.50"), 13)
         self.assertEqual(rounded_whole("12.49"), 12)

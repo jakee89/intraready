@@ -34,6 +34,11 @@ class ExporterTests(unittest.TestCase):
         self.assertIn("_invoice_reference", decoded)
         self.assertIn("INV-7", decoded)
 
+    def test_goods_row_uses_its_own_consignment_country(self):
+        lines = [dict(self.lines[0], consignment_country="PT")]
+        result = declaration_rows([self.invoice], {7: lines}, self.profile, "2026-09")
+        self.assertEqual(result[0]["COC"], "PT")
+
     def test_charges_are_aggregated_before_whole_euro_rounding(self):
         lines = [dict(self.lines[0], invoice_value="100.20", statistical_value="100.20"),
                  {"id": 12, "line_kind": "charge_invoice", "invoice_value": "0.30", "linked_line_id": 11},

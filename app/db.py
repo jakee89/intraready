@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
     raw_commodity_code TEXT NOT NULL DEFAULT '',
     hs_code TEXT NOT NULL DEFAULT '',
     origin_country TEXT NOT NULL DEFAULT '',
+    consignment_country TEXT NOT NULL DEFAULT '',
     invoice_value TEXT NOT NULL DEFAULT '',
     statistical_value TEXT NOT NULL DEFAULT '',
     unit_net_mass TEXT NOT NULL DEFAULT '',
@@ -238,6 +239,9 @@ def init_db() -> None:
                 connection.execute(f"ALTER TABLE invoice_lines ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if "net_mass_overridden" not in existing_line_columns:
             connection.execute("ALTER TABLE invoice_lines ADD COLUMN net_mass_overridden INTEGER NOT NULL DEFAULT 0")
+        if "consignment_country" not in existing_line_columns:
+            connection.execute("ALTER TABLE invoice_lines ADD COLUMN consignment_country TEXT NOT NULL DEFAULT ''")
+            connection.execute("UPDATE invoice_lines SET consignment_country=COALESCE((SELECT consignment_country FROM invoices WHERE invoices.id=invoice_lines.invoice_id),'')")
         supplier_columns = {item[1] for item in connection.execute("PRAGMA table_info(supplier_profiles)")}
         if "layout_mapping" not in supplier_columns:
             connection.execute("ALTER TABLE supplier_profiles ADD COLUMN layout_mapping TEXT NOT NULL DEFAULT ''")

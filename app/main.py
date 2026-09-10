@@ -38,7 +38,7 @@ INVOICE_FIELDS = {
 }
 LINE_FIELDS = {
     "sku", "description", "quantity", "unit", "raw_commodity_code", "hs_code",
-    "origin_country", "invoice_value", "statistical_value", "unit_net_mass", "net_mass", "net_mass_overridden", "supp_qty",
+    "origin_country", "consignment_country", "invoice_value", "statistical_value", "unit_net_mass", "net_mass", "net_mass_overridden", "supp_qty",
     "supp_unit", "special_quantity", "collector_type", "range_value", "line_kind",
     "linked_line_id", "reviewed", "source_page", "confidence", "notes",
 }
@@ -48,7 +48,7 @@ PROFILE_FIELDS = {
 }
 UPPER_FIELDS = {
     "supplier_vat_country", "currency", "consignment_country", "terms_delivery", "flow",
-    "unit", "hs_code", "origin_country", "supp_unit", "default_flow",
+    "unit", "hs_code", "origin_country", "consignment_country", "supp_unit", "default_flow",
 }
 DECIMAL_FIELDS = {"total_value", "quantity", "invoice_value", "statistical_value", "unit_net_mass", "net_mass", "supp_qty", "special_quantity"}
 
@@ -60,7 +60,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=APP_TITLE, version="0.7.1", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=APP_TITLE, version="0.8.0", lifespan=lifespan, docs_url="/api/docs", redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 
@@ -147,7 +147,7 @@ def _preparation_summary(lines_list: list[dict]) -> dict:
         output.append({
             "line_id": line.get("id"), "sku": line.get("sku"), "description": line.get("description"),
             "invoice_value": format(invoice_value, "f"), "statistical_value": format(statistical_value, "f"),
-            "net_mass": line.get("net_mass", ""), "included": included,
+            "net_mass": line.get("net_mass", ""), "consignment_country": line.get("consignment_country", ""), "included": included,
         })
     return {"rows": output, "prepared": bool(output) and all(not line.get("line_kind") == "charge" for line in lines_list)}
 
@@ -243,7 +243,7 @@ def _store_supplier_template(connection, invoice: dict, mapping: list[dict], fin
     supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice.get("supplier_vat_country", "") + invoice.get("supplier_vat_number", "")).upper())
     if len(supplier_vat) < 6 or not invoice.get("supplier_name") or not mapping:
         return None
-    allowed = set(INVOICE_FIELDS) | {f"line_{field}" for field in ("sku", "description", "quantity", "unit", "hs_code", "origin_country", "invoice_value", "unit_net_mass")}
+    allowed = set(INVOICE_FIELDS) | {f"line_{field}" for field in ("sku", "description", "quantity", "unit", "hs_code", "origin_country", "consignment_country", "invoice_value", "unit_net_mass")}
     clean = []
     for region in mapping[:40]:
         if region.get("field") not in allowed:
@@ -356,6 +356,8 @@ async def upload_invoices(files: list[UploadFile] = File(...)):
             positions_to_ids = {}
             pending_links = []
             for position, line in enumerate(draft["lines"], 1):
+                if line.get("line_kind", "goods") == "goods" and not line.get("consignment_country"):
+                    line["consignment_country"] = draft.get("consignment_country", "")
                 requirement = cn_requirement(line.get("hs_code", ""))
                 if requirement["supp_unit"] and not line.get("supp_unit"):
                     line["supp_unit"] = requirement["supp_unit"]
@@ -471,7 +473,7 @@ async def save_supplier_mapping(invoice_id: int, request: Request):
     supplier_vat = re.sub(r"[^A-Z0-9]", "", (invoice["supplier_vat_country"] + invoice["supplier_vat_number"]).upper())
     if len(supplier_vat) < 6 or not invoice.get("supplier_name"):
         raise HTTPException(422, "Enter the supplier name and VAT number before saving a map.")
-    allowed = set(INVOICE_FIELDS) | {f"line_{field}" for field in ("sku", "description", "quantity", "unit", "hs_code", "origin_country", "invoice_value", "unit_net_mass")}
+    allowed = set(INVOICE_FIELDS) | {f"line_{field}" for field in ("sku", "description", "quantity", "unit", "hs_code", "origin_country", "consignment_country", "invoice_value", "unit_net_mass")}
     clean = []
     for region in (await request.json()).get("regions", [])[:40]:
         field = str(region.get("field", ""))
@@ -546,6 +548,8 @@ def extract_again(invoice_id: int, use_ai: bool = False):
                 continue
             next_position += 1
             position = next_position
+            if line.get("line_kind", "goods") == "goods" and not line.get("consignment_country"):
+                line["consignment_country"] = draft.get("consignment_country", "") or invoice.get("consignment_country", "")
             requirement = cn_requirement(line.get("hs_code", ""))
             if requirement["supp_unit"] and not line.get("supp_unit"):
                 line["supp_unit"] = requirement["supp_unit"]
@@ -616,6 +620,9 @@ async def update_invoice(invoice_id: int, request: Request):
     with transaction() as connection:
         assignments = ", ".join(f"{field}=?" for field in updates)
         connection.execute(f"UPDATE invoices SET {assignments} WHERE id=? AND organisation_id=?", (*updates.values(), invoice_id, ORG_ID))
+        if updates.get("consignment_country"):
+            connection.execute("UPDATE invoice_lines SET consignment_country=?,updated_at=? WHERE invoice_id=? AND line_kind='goods' AND consignment_country=''",
+                               (updates["consignment_country"], utc_now(), invoice_id))
         _invalidate(connection, invoice_id, "invoice_updated", {"fields": list(updates)})
     return _payload(invoice_id)
 
@@ -627,6 +634,8 @@ async def create_line(invoice_id: int, request: Request):
         raise HTTPException(409, "Submitted invoices are locked. Prepare a separate amendment draft.")
     body = await request.json()
     values = {field: _clean_value(field, value) for field, value in body.items() if field in LINE_FIELDS}
+    if values.get("line_kind", "goods") == "goods" and not values.get("consignment_country"):
+        values["consignment_country"] = current.get("consignment_country", "")
     requirement = cn_requirement(values.get("hs_code", ""))
     if requirement["supp_unit"] and not values.get("supp_unit"):
         values["supp_unit"] = requirement["supp_unit"]
@@ -784,7 +793,7 @@ def combine_equivalent_lines(invoice_id: int):
     for line in invoice_lines:
         if line["line_kind"] != "goods" or not line["hs_code"] or not line["origin_country"]:
             continue
-        key = (line["hs_code"], line["origin_country"], line["unit"], line["supp_unit"],
+        key = (line["hs_code"], line["origin_country"], line.get("consignment_country", ""), line["unit"], line["supp_unit"],
                line["collector_type"], line["range_value"])
         groups.setdefault(key, []).append(line)
     combined_groups = 0

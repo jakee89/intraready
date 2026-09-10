@@ -20,6 +20,7 @@ The app intentionally stops before government submission. It prepares and valida
 - Side-by-side PDF and editable invoice/line review
 - Blocking issue list, row filters, tooltips and in-app guide
 - Separate supplier VAT country, origin country and consignment country
+- Row-level country of consignment for invoices containing orders shipped from different EU countries
 - Charge decisions: add to invoice value, statistical value only, or exclude
 - Exact reconciliation of goods/charges against the invoice total
 - Approval invalidation after edits or organisation-profile changes
