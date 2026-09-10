@@ -410,6 +410,166 @@ For SaaS:
 - invoices/receipts;
 - upgrade/downgrade.
 
+## Registration, Accounts and Administration
+
+Build this foundation before public SaaS access. Public registration remains disabled initially while the owner creates invited test accounts. Enabling it later must be an admin setting, not an authentication rewrite.
+
+### Registration modes
+
+- **Closed (default):** only the platform owner creates organisations and users.
+- **Invite only:** organisation owners invite people by email.
+- **Approval required:** anyone may register, but an administrator approves the organisation before invoice access.
+- **Open:** verified users may create an organisation and begin the configured trial.
+
+### Registration and sign-in flow
+
+1. Collect name, email, a long password and acceptance of the current terms/privacy versions. Permit passkeys or a supported identity provider later.
+2. Normalise email and rate-limit requests before revealing whether an account exists.
+3. Create a pending account and send a short-lived, single-use verification link.
+4. After verification, create an organisation or accept an invitation.
+5. Collect reporting country, VAT number, flows and internal deadline in a short setup wizard.
+6. Open the first-invoice guide. Registration must never spend AI credits or activate payment.
+
+Support password reset, email change, active-session review, session revocation, passkeys/WebAuthn, TOTP MFA and hashed one-time recovery codes. Require MFA for platform administrators. Require the existing password or MFA before changes to identity, roles, API keys or billing.
+
+Do not use security questions or reveal whether an email exists in login, reset and invitation responses.
+
+### Password and session rules
+
+- Permit long passphrases, password managers and paste; use a minimum of 12 characters for password-only accounts and allow at least 64.
+- Reject commonly breached passwords; hash with Argon2id, a unique salt and library-maintained parameters.
+- Rate-limit registration, login, verification, reset and MFA attempts by account and network source.
+- Use opaque random session identifiers in `Secure`, `HttpOnly`, `SameSite=Lax` cookies and store only their hashes.
+- Rotate sessions after authentication, MFA, password changes and privilege changes.
+- Use explicit CSRF tokens on state-changing browser requests.
+- Apply idle and absolute expiration, with shorter administrator sessions.
+- Never store credentials or session tokens in browser local storage.
+- Require HTTPS and HSTS for hosted installations.
+
+### Roles and tenant isolation
+
+Platform roles are **Platform owner**, **Platform support** and **Platform auditor**. Organisation roles are **Owner**, **Administrator**, **Preparer**, **Reviewer** and **Viewer**.
+
+Enforce permissions on the server for every request. Hidden UI controls are not permission checks. Users may belong to several organisations and must choose the active one explicitly. Every query, uploaded file, background job and export must carry and verify its organisation ID. Support staff cannot see invoices or secrets by default.
+
+### Platform admin dashboard
+
+Use a separate `/platform-admin` area, hidden from ordinary organisation navigation. Require administrator MFA and recent authentication.
+
+Show account and organisation counts; pending registrations; plans and trials; failed-login trends; invoice, storage and AI usage per organisation; failed jobs and stable error codes; email and webhook health; billing-sync status; security alerts; privileged audit events; application version and database-migration status.
+
+Authorised administrators can search accounts, inspect status/roles/sessions, resend invitations, suspend or restore access with a reason, revoke sessions, require a security reset, assign plan entitlements and export account metadata.
+
+Support impersonation only as a future disabled-by-default feature. If enabled, require recent MFA and a reason, display a permanent banner, expire quickly and audit every action. Impersonation can never expose secrets, modify authentication factors, access payment details or delete data.
+
+### Account lifecycle and auditing
+
+Invitations expire and can be revoked. Ownership transfer requires both parties. Suspension blocks new sessions and jobs but retains data. Deletion has a visible recovery period, export option and documented final removal from files, records, secrets and backups. Deleting one organisation cannot affect another belonging to the same user.
+
+Keep append-only audit events for authentication and important business actions. Record actor, organisation, action, target ID, time, request ID and outcome. Never record passwords, session tokens, complete API keys, invoice contents or card data.
+
+### Registration and administration functions
+
+```text
+set_registration_mode(mode, actor_id)
+register_account(email, password, terms_version)
+send_email_verification(user_id)
+verify_email(single_use_token)
+authenticate_password(email, password, request_context)
+begin_mfa_challenge(user_id)
+verify_mfa_challenge(challenge_id, response)
+register_passkey(user_id, webauthn_response)
+request_password_reset(email)
+complete_password_reset(single_use_token, new_password)
+create_session(user_id, request_context)
+rotate_session(session_id)
+list_active_sessions(user_id)
+revoke_session(user_id, session_id)
+revoke_all_other_sessions(user_id)
+create_organisation(owner_id, details)
+invite_member(organisation_id, email, role)
+accept_invitation(single_use_token)
+change_member_role(organisation_id, member_id, role)
+remove_member(organisation_id, member_id)
+transfer_organisation_ownership(organisation_id, new_owner_id)
+request_account_deletion(user_id)
+cancel_account_deletion(user_id)
+execute_expired_deletions()
+list_platform_accounts(filters, cursor)
+get_platform_account(account_id)
+list_platform_organisations(filters, cursor)
+get_organisation_health(organisation_id)
+suspend_account(account_id, reason, actor_id)
+restore_account(account_id, reason, actor_id)
+revoke_account_sessions(account_id, actor_id)
+require_account_security_reset(account_id, actor_id)
+list_security_events(filters, cursor)
+list_failed_jobs(filters, cursor)
+retry_safe_job(job_id, actor_id)
+```
+
+## Billing Foundation — Built but Inactive
+
+Build billing behind a provider-neutral interface and global feature flag. Set `billing_enabled = false` for development and self-hosted installations. While disabled, no checkout, payment-provider customer, invoice or charge may be created. The admin dashboard shows **Billing inactive** and permits test entitlements to be assigned manually.
+
+Plans define entitlements for organisations, seats, invoice volume, AI allowance, storage, retention, supplier layouts, exports, country packs, integrations, approvals and support. Do not scatter plan-name checks through application code. Reaching a limit blocks only the new action and never deletes or corrupts existing work.
+
+Prepare internal subscription states: `inactive`, `trialing`, `active`, `past_due`, `grace_period`, `paused`, `cancel_at_period_end` and `cancelled`.
+
+When activated later, use hosted checkout and the provider's hosted customer portal so IntraReady never handles card numbers. Verify webhook signatures using the raw body, process every event idempotently, tolerate events arriving out of order and reconcile subscription state in a background job. The browser success page is never proof of payment.
+
+```text
+get_available_plans(country, currency)
+get_organisation_entitlements(organisation_id)
+check_entitlement(organisation_id, capability, requested_amount)
+record_metered_usage(organisation_id, metric, amount, source_id)
+preview_usage_limit(organisation_id, metric)
+assign_manual_plan(organisation_id, plan_id, actor_id)
+create_checkout_session(organisation_id, plan_id)
+create_billing_portal_session(organisation_id)
+receive_billing_webhook(raw_body, signature)
+apply_billing_event_once(provider_event_id)
+reconcile_subscription(organisation_id)
+cancel_subscription(organisation_id, timing)
+```
+
+All payment-related functions return `BILLING_DISABLED` until the platform owner configures a provider and explicitly enables billing. Preserve provider event IDs and entitlement changes, make metered usage idempotent, separate AI provider cost from customer billing and never log secrets or payment data.
+
+## SaaS Security Gate
+
+Use a mature identity provider or maintained authentication library instead of custom cryptography. Keep internal users, organisations, memberships and entitlements so the identity provider can be replaced independently.
+
+Required before public registration:
+
+- PostgreSQL and verified tenant isolation for every record and file;
+- encrypted object storage with organisation-scoped paths and short-lived download links;
+- managed secrets for encryption, email, AI and future payment credentials;
+- per-organisation encryption for customer AI keys;
+- isolated document-processing workers plus upload type, size and malware controls;
+- structured logs with secret and personal-data redaction;
+- encrypted backups with tested restoration and tenant deletion;
+- separate development, staging and production environments;
+- migration rollback, monitoring and incident-response procedures;
+- privacy, retention, processor and EU data-location decisions;
+- external security review before launch.
+
+The current shared application password is only a temporary self-hosted gate. Replace it when account authentication is enabled rather than operating two competing login systems.
+
+Security implementation must follow [OWASP authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html), [session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html), [password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html), current [NIST authentication guidance](https://pages.nist.gov/800-63-4/sp800-63b.html), and [Stripe webhook guidance](https://docs.stripe.com/billing/subscriptions/webhooks) if Stripe is selected.
+
+### Security acceptance criteria
+
+- Registration stays closed until explicitly enabled.
+- Verification, reset and invitation tokens are random, hashed, expiring and single-use.
+- Passwords and secrets are never recoverable from logs or the database.
+- Platform administrators must use MFA.
+- Automated permission tests prove cross-organisation records, files, jobs and exports are inaccessible.
+- Sessions are server-side, revocable and protected by secure cookies and CSRF tokens.
+- Privileged changes require recent authentication and create an audit event.
+- Disabled billing cannot contact a payment provider or create a charge.
+- Signed duplicate webhooks are safe before billing activation.
+- Backup restoration and organisation deletion are tested before public launch.
+
 ## AI Control Functions
 
 AI must operate through a provider-independent service.
@@ -578,9 +738,12 @@ Malta remains the first supported pack. Add another country only after its outpu
 
 ### Phase 2 — Teams and integrations
 
-- accounts and roles;
+- secure registration kept in closed/invite-only mode;
+- verified accounts, MFA, sessions and roles;
 - multiple organisations;
 - accountant portfolio;
+- platform admin dashboard and audit log;
+- inactive billing interface, plans and manual entitlements;
 - CSV/Excel profiles;
 - email inbox;
 - webhooks/API;
@@ -592,7 +755,8 @@ Malta remains the first supported pack. Add another country only after its outpu
 - object storage;
 - background job queue;
 - managed secrets;
-- subscriptions and metering;
+- public registration only after the security gate passes;
+- payment-provider activation, subscriptions and metering;
 - operational monitoring;
 - GDPR controls.
 
