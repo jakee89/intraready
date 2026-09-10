@@ -432,20 +432,20 @@ def _parse_stricker(draft: dict, page_lines: list[list[str]], text: str) -> dict
             match = line_pattern.match(raw)
             if not match:
                 continue
-            product_code, sku, description, quantity, unit_price, value = match.groups()
+            item_reference, product_code, description, quantity, unit_price, value = match.groups()
             tariff = origin = ""
             if index + 1 < len(lines):
                 detail = re.search(r"TARIC Code:\s*(\d{8,10})\s+Product Origin:\s*([^\n]+)", lines[index + 1])
                 if detail:
                     tariff = detail.group(1)
                     origin = COUNTRY_NAMES.get(detail.group(2).strip(), "")
-            kind = "charge" if sku.startswith("CS-") else "goods"
-            key = (sku, description, tariff, origin, kind)
+            kind = "charge" if product_code.startswith("CS-") else "goods"
+            key = (item_reference, description, tariff, origin, kind)
             amount = _money(value or "0")
             qty = _money(quantity)
             if key not in grouped:
                 grouped[key] = {
-                    "sku": sku, "description": description, "quantity": qty, "unit": "PCE",
+                    "sku": item_reference, "description": description, "quantity": qty, "unit": "PCE",
                     "raw_commodity_code": tariff, "hs_code": tariff[:8], "origin_country": origin,
                     "invoice_value": amount, "statistical_value": amount if kind == "goods" else "",
                     "net_mass": "", "supp_qty": "", "supp_unit": "", "line_kind": kind,
@@ -566,20 +566,19 @@ def extract_invoice(path: Path, display_name: str | None = None, supplier_profil
                 _apply_supplier_defaults(draft, matched_profile)
         elif ai_message:
             draft["notes"] += " " + ai_message
-    elif matched_profile and matched_profile.get("layout_mapping") and (
-        not matched_profile.get("layout_fingerprint") or matched_profile.get("layout_fingerprint") == layout_fingerprint(path)
-    ):
+    elif matched_profile and matched_profile.get("layout_mapping"):
+        fingerprint_changed = bool(matched_profile.get("layout_fingerprint") and matched_profile.get("layout_fingerprint") != layout_fingerprint(path))
         draft = _parse_saved_mapping(path, draft, matched_profile)
         if not draft["lines"]:
-            draft["notes"] += " The saved layout did not produce reliable rows. Click Learn layout with AI if you want to spend one API request and create a new version."
-    elif matched_profile and matched_profile.get("layout_mapping"):
-        draft["notes"] += " The supplier layout appears to have changed. The previous template was kept. Click Learn layout with AI to create a new version; upload alone never uses API credits."
-        if "Paul Stricker" in combined:
-            draft = _parse_stricker(draft, page_lines, combined)
-        elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
-            draft = _parse_midocean(draft, page_lines, combined)
-        else:
-            draft = _parse_common_tables(draft, tables, combined)
+            if "Paul Stricker" in combined:
+                draft = _parse_stricker(draft, page_lines, combined)
+            elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:
+                draft = _parse_midocean(draft, page_lines, combined)
+            else:
+                draft = _parse_common_tables(draft, tables, combined)
+            draft["notes"] += " The saved map produced no reliable rows, so the built-in supplier reader was used."
+        elif fingerprint_changed:
+            draft["notes"] += " The saved supplier map was reused on a visually different invoice; verify the extracted rows."
     elif "Paul Stricker" in combined:
         draft = _parse_stricker(draft, page_lines, combined)
     elif "midocean" in combined.lower() or "Mid Ocean Brands" in combined:

@@ -28,6 +28,8 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(len(draft["lines"]), 1)
         self.assertEqual(draft["lines"][0]["quantity"], "4")
         self.assertEqual(draft["lines"][0]["invoice_value"], "20.00")
+        self.assertEqual(draft["lines"][0]["sku"], "ABC")
+        self.assertIn("PD-00000001", draft["lines"][0]["notes"])
 
 
 if __name__ == "__main__":

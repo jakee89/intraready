@@ -4,6 +4,7 @@
 
 - On an invoice, use **Remember supplier** after checking the shipment defaults. Approval also saves them automatically. Future PDFs are matched by supplier VAT/name and reuse flow, currency, consignment country, transport mode, Incoterm and transaction nature.
 - Confirmed supplier layouts use the fast local reader and consume no API credits. Uploading never calls an external AI. For an unknown or changed layout, the user can explicitly click **Learn layout with AI**, approve sending that PDF to OpenAI, and save a new versioned supplier template.
+- **Re-read locally** repairs unreviewed rows using the saved supplier layout without spending API credits.
 - CN codes are checked against the 2026 EU Combined Nomenclature. The required supplementary unit is filled automatically; piece/pair quantities are copied from the goods quantity and all other required quantities remain visible for manual entry.
 - The bundled reference comes from the Spanish Tax Agency's EU CN 2026 workbook: https://sede.agenciatributaria.gob.es/static_files/Sede/Tema/Aduanas/Comercio_exterior/Nomenclaturas/2026/CN2026_Structure.xlsx
 
