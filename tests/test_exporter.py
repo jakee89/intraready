@@ -70,6 +70,30 @@ class ExporterTests(unittest.TestCase):
             path.write_text("<!doctype html><title>Blocked</title>", encoding="utf-8")
             self.assertFalse(inspect_schema(path)["valid"])
 
+    def test_supplementary_area_and_volume_units_match_xsd(self):
+        fields = "\n".join(f'<xs:element name="{name}" type="xs:string" minOccurs="0"/>' for name in EXPORT_FIELDS if name != "SUPP_UNIT")
+        schema = f'''<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+          <xs:element name="Declarations"><xs:complexType><xs:sequence>
+            <xs:element name="Decl" maxOccurs="unbounded"><xs:complexType><xs:sequence>
+              {fields}
+              <xs:element name="SUPP_UNIT"><xs:simpleType><xs:restriction base="xs:string">
+                <xs:enumeration value="m²"/><xs:enumeration value="m³"/>
+                <xs:enumeration value="1 000 m³"/><xs:enumeration value="p/st"/>
+              </xs:restriction></xs:simpleType></xs:element>
+            </xs:sequence></xs:complexType></xs:element>
+          </xs:sequence></xs:complexType></xs:element>
+        </xs:schema>'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "units.xsd"
+            path.write_text(schema, encoding="utf-8")
+            for saved, expected in [("m2", "m²"), ("m3", "m³"), ("1 000 m3", "1 000 m³"), ("m²", "m²"), ("p/st", "p/st")]:
+                with self.subTest(unit=saved):
+                    line = dict(self.lines[0], supp_unit=saved, supp_qty="12")
+                    rows = declaration_rows([self.invoice], {7: [line]}, self.profile, "2026-09")
+                    xml = xml_bytes(rows, path)
+                    self.assertEqual(etree.fromstring(xml).findtext("Decl/SUPP_UNIT"), expected)
+                    self.assertEqual(line["supp_unit"], saved)
+
 
 if __name__ == "__main__":
     unittest.main()

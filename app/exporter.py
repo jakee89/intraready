@@ -43,6 +43,12 @@ def normalise(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+def export_supplementary_unit(value: str) -> str:
+    """Translate internal CN unit spelling to the official XML spelling."""
+    unit = (value or "").strip()
+    return {"m2": "m²", "m3": "m³", "1 000 m3": "1 000 m³"}.get(unit, unit)
+
+
 def declaration_rows(invoices: list[dict], lines_by_invoice: dict[int, list[dict]], profile: dict, period: str) -> list[dict]:
     mmYYYY = period[5:7] + period[:4]
     result = []
@@ -85,7 +91,7 @@ def declaration_rows(invoices: list[dict], lines_by_invoice: dict[int, list[dict
                 "STAT_VALUE": str(rounded_whole(Decimal(str(line["statistical_value"] or "0")) + allocated["stat"])),
                 "NET_MASS": str(max(1, rounded_whole(line["net_mass"]))),
                 "SUPP_QTY": str(rounded_whole(line["supp_qty"])) if line["supp_qty"] else "",
-                "SUPP_UNIT": line["supp_unit"],
+                "SUPP_UNIT": export_supplementary_unit(line["supp_unit"]),
                 "QUANTITY": str(rounded_whole(line["special_quantity"])) if line.get("special_quantity") else "",
                 "TOC": line.get("collector_type", ""), "RANGE": line.get("range_value", ""),
                 "_invoice_id": invoice["id"], "_invoice_reference": invoice["invoice_number"],
